@@ -270,6 +270,8 @@ unsafe impl Interface for {id} {{
 pub fn generate(input: &Path, include: &Path, out: &Path, args: &[String], includes: &str) {
     let clang =
         Clang::new().expect("Install libclang and set LIBCLANG_PATH to its library directory");
+    #[cfg(windows)]
+    keep_libclang_loaded();
     let index = Index::new(&clang, false, false);
     let tu = index
         .parser(input)
@@ -300,4 +302,27 @@ pub fn generate(input: &Path, include: &Path, out: &Path, args: &[String], inclu
         "cargo:warning=Generated {} Slang API entries",
         g.manifest.len()
     );
+}
+
+#[cfg(windows)]
+fn keep_libclang_loaded() {
+    use std::sync::{Arc, OnceLock};
+
+    // LLVM 20.x can leave FLS callbacks pointing into libclang.dll after unload:
+    // https://github.com/llvm/llvm-project/issues/154361
+    // Retain the actual DLL owner outside clang-sys's thread-local storage. A
+    // static is not dropped at thread/process exit. Forgetting the zero-sized
+    // Clang guard alone still lets the TLS Arc unload the DLL on thread exit,
+    // and also prevents later Clang::new calls from acquiring its singleton.
+    static LIBCLANG: OnceLock<Arc<clang_sys::SharedLibrary>> = OnceLock::new();
+    LIBCLANG.get_or_init(|| {
+        let library = clang_sys::get_library().expect("Clang::new loaded libclang");
+        #[cfg(test)]
+        eprintln!(
+            "Retaining {} ({})",
+            library.path().display(),
+            clang::get_version()
+        );
+        library
+    });
 }

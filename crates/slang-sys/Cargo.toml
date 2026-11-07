@@ -22,6 +22,12 @@ cc = "1.2"
 clang = { version = "2.0", features = ["runtime", "clang_10_0"] }
 cc = "1.2"
 
+[target.'cfg(windows)'.build-dependencies]
+clang-sys = { version = "1.9", features = ["runtime"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+clang-sys = { version = "1.9", features = ["runtime"] }
+
 [lints]
 workspace = true
 

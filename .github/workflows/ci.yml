@@ -65,7 +65,7 @@ jobs:
         if: matrix.rust == 'stable'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Unit, integration, and documentation tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked -- --nocapture
       - name: Compile and reflect SPIR-V
         run: cargo run --locked -p slang-auto --example compile
       - name: Build API documentation

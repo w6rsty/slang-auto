@@ -13,6 +13,18 @@ fn new_cpp_api_is_discovered_and_callable() {
         .join(std::process::id().to_string());
     fs::create_dir_all(&out).unwrap();
     let out = out.canonicalize().unwrap();
+    // Rust 1.85 passes a verbatim current_dir through to MSVC. Its relative
+    // source-file lookup then fails even though the files exist. Keep a fully
+    // resolved path, but spell it as a normal Win32 drive/UNC path for tools.
+    #[cfg(windows)]
+    let out = {
+        let path = out.to_string_lossy();
+        if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{unc}"))
+        } else {
+            PathBuf::from(path.strip_prefix(r"\\?\").unwrap_or(&path))
+        }
+    };
     let header = out.join("fixture.hpp");
     fs::write(&header, r#"
 #pragma once
@@ -44,7 +56,18 @@ inline int freeApi(int v) { return v * 2; }
         format!("-I{}", env!("SLANG_BINDINGS_INCLUDE")),
         format!("--target={}", env!("SLANG_BINDINGS_TARGET")),
     ];
-    generate::generate(&header, &out, &out, &args, "#include \"fixture.hpp\"\n");
+    // Exercise both guard cleanup and thread-local teardown. An LLVM DLL may
+    // load/parse successfully yet crash when its loading thread exits. Running
+    // twice also detects accidentally leaking Clang's exclusive-use guard.
+    for pass in 1..=2 {
+        let (header, out, args) = (header.clone(), out.clone(), args.clone());
+        eprintln!("Generating fixture on worker thread (pass {pass})");
+        std::thread::spawn(move || {
+            generate::generate(&header, &out, &out, &args, "#include \"fixture.hpp\"\n");
+        })
+        .join()
+        .expect("generator worker panicked");
+    }
     let manifest = fs::read_to_string(out.join("api-manifest.txt")).unwrap();
     for name in [
         "fixture_Future_newApi",
@@ -118,5 +141,12 @@ int main() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(Command::new(exe).status().unwrap().success());
+    let output = Command::new(exe).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Generated C++ fixture failed ({}):\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

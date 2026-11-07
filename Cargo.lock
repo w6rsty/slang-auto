@@ -243,6 +243,7 @@ dependencies = [
  "bindgen",
  "cc",
  "clang",
+ "clang-sys",
 ]
 
 [[package]]
