@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Rust ${{ matrix.rust }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        rust: [stable, '1.85.0']
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust
+        shell: pwsh
+        env:
+          RUST_TOOLCHAIN: ${{ matrix.rust }}
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set $env:RUST_TOOLCHAIN
+      - name: Install libclang (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libclang-18-dev
+          echo 'LIBCLANG_PATH=/usr/lib/llvm-18/lib' >> "$GITHUB_ENV"
+      - name: Locate libclang (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $llvmBin = 'C:/Program Files/LLVM/bin'
+          if (!(Test-Path "$llvmBin/libclang.dll")) {
+            choco install llvm --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          "LIBCLANG_PATH=$llvmBin" >> $env:GITHUB_ENV
+      - name: Install pinned Slang SDK
+        shell: pwsh
+        run: python ci/install_slang.py --destination "$env:RUNNER_TEMP/slang-sdk"
+      - name: Check formatting
+        if: matrix.rust == 'stable'
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        if: matrix.rust == 'stable'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Unit, integration, and documentation tests
+        run: cargo test --workspace --locked
+      - name: Compile and reflect SPIR-V
+        run: cargo run --locked -p slang-auto --example compile
+      - name: Build API documentation
+        run: cargo doc --workspace --no-deps --locked
+      - name: Verify distributable crates
+        if: matrix.rust == 'stable'
+        run: cargo package --workspace --locked
+      - name: Audit package contents
+        if: matrix.rust == 'stable'
+        run: python ci/check_packages.py
+      - name: Test documentation-only build without SDK
+        if: matrix.rust == 'stable' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:DOCS_RS = '1'
+          $env:SLANG_DIR = 'Z:/sdk-does-not-exist'
+          $env:VULKAN_SDK = 'Z:/sdk-does-not-exist'
+          cargo doc --workspace --no-deps --locked --target x86_64-pc-windows-msvc

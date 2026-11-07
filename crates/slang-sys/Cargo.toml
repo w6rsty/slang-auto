@@ -1,0 +1,31 @@
+[package]
+name = "slang-auto-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+include = ["src/**", "tests/**", "docs/**", "Cargo.toml", "build.rs", "generate.rs", "README.md", "LICENSE"]
+links = "slang"
+description = "Header-generated C++ bridge and raw bindings for the Slang shader compiler"
+
+[build-dependencies]
+bindgen = "0.72"
+clang = { version = "2.0", features = ["runtime", "clang_10_0"] }
+cc = "1.2"
+
+[dev-dependencies]
+clang = { version = "2.0", features = ["runtime", "clang_10_0"] }
+cc = "1.2"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
+

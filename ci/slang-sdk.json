@@ -1,0 +1,13 @@
+{
+  "version": "2026.17.1",
+  "assets": {
+    "Windows": {
+      "file": "slang-2026.17.1-windows-x86_64.zip",
+      "sha256": "a41896cba523ecfecaf67d18bdb7767349112a45540ac0b88e8ce48e10ce239f"
+    },
+    "Linux": {
+      "file": "slang-2026.17.1-linux-x86_64-glibc-2.27.tar.gz",
+      "sha256": "134175dba82aac317e560ac58a9cf5380ffafd2c14f32b0e852cddb7f936bb40"
+    }
+  }
+}
