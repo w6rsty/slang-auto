@@ -33,7 +33,7 @@ pub use reflection::*;
 ///
 /// The library owns the NUL-terminated bytes for the process lifetime. No allocation
 /// or UTF-8 conversion is performed; use [`std::ffi::CStr::to_str`] for checked UTF-8
-/// or [`std::ffi::CStr::to_string_lossy`] for display.
+/// or [`CStr::to_string_lossy`](https://doc.rust-lang.org/std/ffi/struct.CStr.html#method.to_string_lossy) for display.
 ///
 /// ```
 /// let tag = slang_auto::build_tag_string();
