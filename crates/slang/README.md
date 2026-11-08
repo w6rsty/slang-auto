@@ -18,6 +18,7 @@ can use `SLANG_INCLUDE_DIR` and `SLANG_LIB_DIR`. At runtime, put the matching SD
 use slang_auto::{GlobalSession, SessionOptions};
 
 fn main() -> slang_auto::Result<()> {
+    println!("Slang build: {}", slang_auto::build_tag_string().to_string_lossy());
     let global = GlobalSession::new()?;
     let session = global.create_session(&SessionOptions::default())?;
     let module = session.load_module_from_source("example", "example.slang", r#"
@@ -42,6 +43,11 @@ fn main() -> slang_auto::Result<()> {
 unsafe `call_owned()` support advanced interfaces without adding handwritten
 bindings. Reflection views borrow their owning component. Strings validate NULs;
 successful diagnostics are retained in `Output<T>`. Handles are not `Send`/`Sync`.
+
+`build_tag_string()` returns the loaded compiler's build identifier as an
+allocation-free `&'static CStr`, without requiring a session. Use `to_str()` for
+checked UTF-8 or `to_string_lossy()` for display. This is an opaque runtime build
+identifier; custom builds need not use semantic-version formatting.
 
 The safe layer covers common operations; all generated compiler and reflection
 APIs remain available through `sys`. C++ templates and Rust implementations of

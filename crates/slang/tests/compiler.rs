@@ -28,6 +28,28 @@ fn linked_program() -> Component {
 }
 
 #[test]
+fn build_tag_matches_session_and_outlives_it() {
+    let tag: &'static std::ffi::CStr = slang_auto::build_tag_string();
+    let expected = tag.to_bytes().to_vec();
+    let global = GlobalSession::new().unwrap();
+    // Compare the standalone C API with the independently generated C++ method.
+    let session_tag = unsafe {
+        let ptr = sys::slang_rs_slang_IGlobalSession_getBuildTagString(global.as_raw().as_ptr());
+        assert!(!ptr.is_null());
+        std::ffi::CStr::from_ptr(ptr)
+    };
+    assert_eq!(tag, session_tag);
+    drop(global);
+    // Unlike session handles, the immutable build tag can be retained and shared.
+    std::thread::spawn(move || {
+        assert_eq!(tag.to_bytes(), expected);
+        assert_eq!(tag, slang_auto::build_tag_string());
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn compile_reflect_and_retain_parents() {
     let program = linked_program();
     let layout = program.layout(0).unwrap().value;

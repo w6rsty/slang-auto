@@ -1,6 +1,10 @@
 use slang_auto::{GlobalSession, SessionOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "Slang build: {}",
+        slang_auto::build_tag_string().to_string_lossy()
+    );
     let global = GlobalSession::new()?;
     let session = global.create_session(&SessionOptions::default())?;
     let module = session.load_module_from_source(

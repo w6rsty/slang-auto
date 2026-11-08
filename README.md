@@ -70,6 +70,22 @@ fn main() -> slang_auto::Result<()> {
 
 The complete runnable example is in `crates/slang/examples/compile.rs`.
 
+### Slang Build Identifier
+
+Query the loaded compiler library without creating a session:
+
+```rust
+let tag = slang_auto::build_tag_string(); // &'static CStr, no allocation
+println!("Slang build: {}", tag.to_string_lossy());
+```
+
+This wraps `spGetBuildTagString()`, which returns the same identifier as
+`IGlobalSession::getBuildTagString()`. The bytes belong to the linked library and
+remain valid independently of session lifetimes. Use `tag.to_str()` for checked
+UTF-8 or `tag.to_bytes()` for exact bytes. The identifier describes the runtime
+library, not the Rust crate or build-time SDK headers. Custom Slang builds can
+return arbitrary text or a timestamp; do not assume semantic-version formatting.
+
 ## SDK Configuration
 
 | Environment variable | Purpose |
