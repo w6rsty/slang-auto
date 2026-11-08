@@ -68,6 +68,8 @@ jobs:
         run: cargo test --workspace --locked -- --nocapture
       - name: Compile and reflect SPIR-V
         run: cargo run --locked -p slang-auto --example compile
+      - name: Check unchanged builds stay fresh
+        run: python ci/check_incremental.py
       - name: Build API documentation
         run: cargo doc --workspace --no-deps --locked
       - name: Verify distributable crates

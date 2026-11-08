@@ -152,7 +152,12 @@ fn main() {
         )
         .layout_tests(true)
         .derive_default(false)
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        // bridge.hpp is generated in OUT_DIR, not a source dependency. Tracking
+        // it makes this script invalidate itself on every build. Included SDK
+        // and system headers, and bindgen environment variables, remain tracked.
+        .parse_callbacks(Box::new(
+            bindgen::CargoCallbacks::new().rerun_on_header_files(false),
+        ))
         .generate()
         .expect("bindgen failed")
         .write_to_file(out.join("bindings.rs"))
