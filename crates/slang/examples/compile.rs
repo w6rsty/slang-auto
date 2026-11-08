@@ -33,7 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     print_diagnostics(&module.diagnostics);
     let entry = module.value.find_entry_point("main")?;
-    let program = session.compose(&[&module.value.as_component(), &entry.as_component()])?;
+    let program =
+        session.compose_refs(&[module.value.as_component_ref(), entry.as_component_ref()])?;
     print_diagnostics(&program.diagnostics);
     let linked = program.value.link()?;
     print_diagnostics(&linked.diagnostics);

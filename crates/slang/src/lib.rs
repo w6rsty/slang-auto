@@ -23,9 +23,13 @@ mod compile;
 mod options;
 mod reflection;
 mod strings;
+#[cfg(test)]
+mod test_support;
 pub use com::{Blob, ComPtr, Error, Output, Result};
 pub use compile::CompileResult;
-pub use compile::{Component, EntryPoint, GlobalSession, Module, Session, SessionOptions, Target};
+pub use compile::{
+    Component, ComponentRef, EntryPoint, GlobalSession, Module, Session, SessionOptions, Target,
+};
 pub use options::{
     Capability, CompilerOption, DebugInfoLevel, MatrixLayout, OptimizationLevel, SessionDesc,
     Stage, TargetDesc,

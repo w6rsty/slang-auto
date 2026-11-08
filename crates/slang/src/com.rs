@@ -98,6 +98,8 @@ impl<T: sys::Interface> ComPtr<T> {
     pub unsafe fn from_raw_borrowed(ptr: *mut T) -> Option<Self> {
         unsafe {
             let value = Self::from_raw_owned(ptr)?;
+            #[cfg(test)]
+            crate::test_support::record_add_ref();
             T::add_ref(ptr);
             Some(value)
         }
@@ -108,6 +110,19 @@ impl<T: sys::Interface> ComPtr<T> {
     pub(crate) fn with_owner(mut self, owner: impl std::any::Any) -> Self {
         self.keep_alive = Some(Rc::new(owner));
         self
+    }
+    /// Retain another interface on this same object, sharing its dependency graph.
+    ///
+    /// # Safety
+    /// `ptr` must be a non-null, live interface on the same object, obtained with
+    /// the generated C++ base conversion. Its reference must keep the object
+    /// alive, and it must need no dependencies beyond this handle's keep_alive.
+    pub(crate) unsafe fn retain_interface<U: sys::Interface>(&self, ptr: *mut U) -> ComPtr<U> {
+        // SAFETY: the caller supplies a live base interface on this object.
+        let mut retained = unsafe { ComPtr::from_raw_borrowed(ptr) }
+            .expect("base interface conversion returned null");
+        retained.keep_alive = self.keep_alive.clone();
+        retained
     }
     /// Query an extension interface using its SDK-generated UUID.
     pub fn query<U: sys::Interface>(&self) -> Result<ComPtr<U>> {
@@ -146,6 +161,8 @@ impl<T: sys::Interface> ComPtr<T> {
 }
 impl<T: sys::Interface> Clone for ComPtr<T> {
     fn clone(&self) -> Self {
+        #[cfg(test)]
+        crate::test_support::record_add_ref();
         unsafe {
             T::add_ref(self.as_ptr());
             Self {
@@ -158,6 +175,8 @@ impl<T: sys::Interface> Clone for ComPtr<T> {
 }
 impl<T: sys::Interface> Drop for ComPtr<T> {
     fn drop(&mut self) {
+        #[cfg(test)]
+        crate::test_support::record_release();
         unsafe {
             T::release(self.as_ptr());
         }
@@ -321,6 +340,28 @@ mod tests {
         assert!(!counts.destroyed.get());
         drop(borrowed);
         assert!(counts.destroyed.get());
+    }
+
+    #[test]
+    fn retained_interface_shares_context_and_balances_its_reference() {
+        let (owner, counts) = mock();
+        let context = Rc::new(());
+        let weak_context = Rc::downgrade(&context);
+        let owner = owner.with_owner(context);
+        let (retained, costs) = crate::test_support::measure(|| {
+            // SAFETY: retaining the same interface on the live mock object.
+            unsafe { owner.retain_interface(owner.as_ptr()) }
+        });
+        assert_eq!(costs.allocations, 0);
+        assert_eq!(costs.add_refs, 1);
+        assert_eq!(counts.references.get(), 2);
+        drop(owner);
+        assert!(weak_context.upgrade().is_some());
+        assert!(!counts.destroyed.get());
+        drop(retained);
+        assert_eq!(counts.references.get(), 0);
+        assert!(counts.destroyed.get());
+        assert!(weak_context.upgrade().is_none());
     }
 
     #[test]

@@ -28,7 +28,9 @@ fn main() -> slang_auto::Result<()> {
     "#)?;
     eprint!("{}", module.diagnostics);
     let entry = module.value.find_entry_point("main")?;
-    let program = session.compose(&[&module.value.as_component(), &entry.as_component()])?;
+    let program = session.compose_refs(&[
+        module.value.as_component_ref(), entry.as_component_ref(),
+    ])?;
     eprint!("{}", program.diagnostics);
     let linked = program.value.link()?;
     eprint!("{}", linked.diagnostics);
@@ -43,6 +45,22 @@ fn main() -> slang_auto::Result<()> {
 unsafe `call_owned()` support advanced interfaces without adding handwritten
 bindings. Reflection views borrow their owning component. Strings validate NULs;
 successful diagnostics are retained in `Output<T>`. Handles are not `Send`/`Sync`.
+
+`Module`, `EntryPoint`, and `Component` expose `as_component_ref()` for a borrowed
+`ComponentRef`. Creating, copying, or dropping these views does not allocate or
+change COM reference counts. `ComponentRef::from(&value)` is also supported.
+The view cannot outlive its source and is neither `Send` nor `Sync`.
+
+`Session::compose_refs(&views)` accepts mixed borrowed inputs, rejects empty or
+cross-session input lists, and returns an owned `Component`. Up to four input
+pointers and retained handles fit in inline buffers; larger lists spill to the
+heap. After a successful call, the wrapper retains one COM reference per input,
+shares the inputs' existing dependency graphs, and allocates one dependency
+owner for the result. Inputs can then be dropped, including when the result's
+raw handle is cloned or queried. Slang's own allocations and diagnostic text
+conversion are additional costs. The existing `as_component()` owned conversion
+and `compose(&[&Component])` remain supported; `compose` shares the optimized
+implementation.
 
 For explicit compiler configuration, borrow ordinary Rust strings and slices:
 

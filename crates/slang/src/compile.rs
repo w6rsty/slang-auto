@@ -6,6 +6,7 @@ use crate::{
 use smallvec::SmallVec;
 use std::{
     ffi::{CStr, CString},
+    ptr::NonNull,
     rc::Rc,
 };
 
@@ -213,23 +214,30 @@ impl Session {
             })
         }
     }
+    /// Compose owned components. Existing callers can keep using this entry point.
+    /// For modules and entry points without temporary owned conversions, use
+    /// [`Self::compose_refs`]. Both paths share validation and inline buffers.
     pub fn compose(&self, components: &[&Component]) -> Result<Output<Component>> {
-        if components.is_empty() {
-            return Err(Error::InvalidArgument(
-                "Composition requires at least one component",
-            ));
-        }
-        if components
-            .iter()
-            .any(|c| !Rc::ptr_eq(&self.0, &c.session.0))
-        {
-            return Err(Error::InvalidArgument(
-                "All components must belong to the same session",
-            ));
-        }
-        let pointers: Vec<_> = components.iter().map(|c| c.raw.as_ptr()).collect();
+        self.compose_impl(components.iter().map(|c| c.as_component_ref()))
+    }
+    /// Compose borrowed module, entry-point, or component views.
+    ///
+    /// Up to four inputs fit in inline pointer and retained-handle buffers.
+    /// Larger lists spill to the heap. On success, the result retains one COM
+    /// reference per input and shares each input's existing dependency graph.
+    /// Inputs may then be dropped; the result has no borrow of this slice.
+    pub fn compose_refs(&self, components: &[ComponentRef<'_>]) -> Result<Output<Component>> {
+        self.compose_impl(components.iter().copied())
+    }
+    fn compose_impl<'a>(
+        &self,
+        components: impl ExactSizeIterator<Item = ComponentRef<'a>> + Clone,
+    ) -> Result<Output<Component>> {
+        let pointers = self.component_pointers(components.clone())?;
         let n = count(pointers.len())?;
-        unsafe {
+        // SAFETY: every view borrows a live source in this session; pointers were
+        // converted through the generated C++ bridge, including base adjustments.
+        let output = unsafe {
             owned_output("createCompositeComponentType", |out, diag| {
                 sys::slang_rs_slang_ISession_createCompositeComponentType(
                     self.as_raw().as_ptr(),
@@ -239,16 +247,35 @@ impl Session {
                     diag,
                 )
             })
+        }?;
+        // Only retain inputs after success. Sharing their ComPtr dependency
+        // graphs preserves raw-handle escape semantics without allocating an
+        // owned intermediate Component for each module or entry point.
+        let retained: SmallVec<[_; 4]> = components.map(ComponentRef::retain).collect();
+        Ok(output.map(|raw| Component {
+            raw: raw.with_owner((self.clone(), retained)),
+            session: self.clone(),
+        }))
+    }
+    fn component_pointers<'a>(
+        &self,
+        components: impl ExactSizeIterator<Item = ComponentRef<'a>> + Clone,
+    ) -> Result<SmallVec<[*mut sys::slang_IComponentType; 4]>> {
+        if components.len() == 0 {
+            return Err(Error::InvalidArgument(
+                "Composition requires at least one component",
+            ));
         }
-        .map(|o| {
-            o.map(|raw| Component {
-                raw: raw.with_owner((
-                    self.clone(),
-                    components.iter().map(|c| (*c).clone()).collect::<Vec<_>>(),
-                )),
-                session: self.clone(),
-            })
-        })
+        if components
+            .clone()
+            .any(|c| !Rc::ptr_eq(&self.0, &c.session().0))
+        {
+            return Err(Error::InvalidArgument(
+                "All components must belong to the same session",
+            ));
+        }
+        count(components.len())?;
+        Ok(components.map(ComponentRef::as_ptr).collect())
     }
     fn target(&self, index: usize) -> Result<sys::SlangInt> {
         if index >= self.0.target_count {
@@ -267,6 +294,19 @@ impl Module {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IModule> {
         &self.raw
     }
+    /// Borrow a component view without allocating or changing reference counts.
+    #[inline]
+    pub fn as_component_ref(&self) -> ComponentRef<'_> {
+        // SAFETY: this is a live module; the generated bridge adjusts the base
+        // pointer correctly. The returned view borrows this module.
+        let ptr = unsafe { sys::slang_rs_slang_IModule_as_slang_IComponentType(self.raw.as_ptr()) };
+        ComponentRef {
+            ptr: NonNull::new(ptr).expect("module base interface"),
+            source: ComponentSource::Module(self),
+        }
+    }
+    /// Create an owned component reference. For a temporary composition input,
+    /// prefer [`Self::as_component_ref`], which does not retain or allocate.
     pub fn as_component(&self) -> Component {
         let raw = unsafe {
             ComPtr::from_raw_borrowed(sys::slang_rs_slang_IModule_as_slang_IComponentType(
@@ -341,6 +381,20 @@ impl EntryPoint {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IEntryPoint> {
         &self.raw
     }
+    /// Borrow a component view without allocating or changing reference counts.
+    #[inline]
+    pub fn as_component_ref(&self) -> ComponentRef<'_> {
+        // SAFETY: this is a live entry point and the bridge performs the C++
+        // base conversion. The returned view borrows this entry point.
+        let ptr =
+            unsafe { sys::slang_rs_slang_IEntryPoint_as_slang_IComponentType(self.raw.as_ptr()) };
+        ComponentRef {
+            ptr: NonNull::new(ptr).expect("entry-point base interface"),
+            source: ComponentSource::EntryPoint(self),
+        }
+    }
+    /// Create an owned component reference. For temporary composition inputs,
+    /// prefer [`Self::as_component_ref`].
     pub fn as_component(&self) -> Component {
         let raw = unsafe {
             ComPtr::from_raw_borrowed(sys::slang_rs_slang_IEntryPoint_as_slang_IComponentType(
@@ -355,6 +409,96 @@ impl EntryPoint {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ComponentSource<'a> {
+    Module(&'a Module),
+    EntryPoint(&'a EntryPoint),
+    Component(&'a Component),
+}
+
+/// A borrowed component view for [`Session::compose_refs`]. Creating, copying,
+/// and dropping a view neither allocates nor changes COM reference counts.
+/// It cannot outlive its source and remains neither `Send` nor `Sync`.
+///
+/// ```compile_fail
+/// use slang_auto::{ComponentRef, Module};
+/// fn dangling(module: Module) -> ComponentRef<'static> {
+///     module.as_component_ref()
+/// }
+/// ```
+/// ```compile_fail
+/// use slang_auto::{ComponentRef, EntryPoint};
+/// fn dangling(entry: EntryPoint) -> ComponentRef<'static> {
+///     entry.as_component_ref()
+/// }
+/// ```
+/// ```compile_fail
+/// use slang_auto::{Component, ComponentRef};
+/// fn dangling(component: Component) -> ComponentRef<'static> {
+///     component.as_component_ref()
+/// }
+/// ```
+/// ```compile_fail
+/// use slang_auto::ComponentRef;
+/// fn require_send<T: Send>() {}
+/// require_send::<ComponentRef<'static>>();
+/// ```
+/// ```compile_fail
+/// use slang_auto::ComponentRef;
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<ComponentRef<'static>>();
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct ComponentRef<'a> {
+    ptr: NonNull<sys::slang_IComponentType>,
+    source: ComponentSource<'a>,
+}
+impl<'a> ComponentRef<'a> {
+    /// Borrowed raw interface pointer. Calling raw methods is unsafe; the
+    /// pointer is only valid while the source and its dependencies remain live.
+    #[inline]
+    pub fn as_ptr(self) -> *mut sys::slang_IComponentType {
+        self.ptr.as_ptr()
+    }
+    fn session(self) -> &'a Session {
+        match self.source {
+            ComponentSource::Module(source) => &source.session,
+            ComponentSource::EntryPoint(source) => &source.session,
+            ComponentSource::Component(source) => &source.session,
+        }
+    }
+    fn retain(self) -> ComPtr<sys::slang_IComponentType> {
+        // SAFETY: private constructors obtain ptr via the generated base cast
+        // (or directly for Component). Each source raw handle already retains
+        // its dependencies; the composition also retains the common session.
+        unsafe {
+            match self.source {
+                ComponentSource::Module(source) => source.raw.retain_interface(self.as_ptr()),
+                ComponentSource::EntryPoint(source) => source.raw.retain_interface(self.as_ptr()),
+                ComponentSource::Component(source) => source.raw.retain_interface(self.as_ptr()),
+            }
+        }
+    }
+}
+impl<'a> From<&'a Module> for ComponentRef<'a> {
+    #[inline]
+    fn from(source: &'a Module) -> Self {
+        source.as_component_ref()
+    }
+}
+impl<'a> From<&'a EntryPoint> for ComponentRef<'a> {
+    #[inline]
+    fn from(source: &'a EntryPoint) -> Self {
+        source.as_component_ref()
+    }
+}
+impl<'a> From<&'a Component> for ComponentRef<'a> {
+    #[inline]
+    fn from(source: &'a Component) -> Self {
+        source.as_component_ref()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Component {
     raw: ComPtr<sys::slang_IComponentType>,
@@ -363,6 +507,14 @@ pub struct Component {
 impl Component {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IComponentType> {
         &self.raw
+    }
+    /// Borrow this component without allocating or retaining another reference.
+    #[inline]
+    pub fn as_component_ref(&self) -> ComponentRef<'_> {
+        ComponentRef {
+            ptr: NonNull::new(self.raw.as_ptr()).expect("live component interface"),
+            source: ComponentSource::Component(self),
+        }
     }
     fn compile_result_interface(&self) -> Result<ComPtr<sys::slang_IComponentType2>> {
         self.raw.query().map_err(|error| match error {
@@ -553,4 +705,142 @@ pub(crate) fn count(value: usize) -> Result<sys::SlangInt> {
     value
         .try_into()
         .map_err(|_| Error::InvalidArgument("Count exceeds SlangInt"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Costs, measure};
+
+    fn inputs() -> (Session, Module, EntryPoint) {
+        let global = GlobalSession::new().unwrap();
+        let session = global.create_session(&SessionOptions::default()).unwrap();
+        let module = session
+            .load_module_from_source(
+                "costs",
+                "costs.slang",
+                r#"
+            RWStructuredBuffer<float> output;
+            [shader("compute")][numthreads(1, 1, 1)]
+            void main(uint3 id : SV_DispatchThreadID) { output[id.x] = float(id.x); }
+        "#,
+            )
+            .unwrap()
+            .value;
+        let entry = module.find_entry_point("main").unwrap();
+        (session, module, entry)
+    }
+
+    #[test]
+    fn borrowed_views_and_small_pointer_arrays_have_no_wrapper_costs() {
+        let (session, module, entry) = inputs();
+        let component = module.as_component();
+        let (_, costs) = measure(|| {
+            let views = [
+                module.as_component_ref(),
+                entry.as_component_ref(),
+                component.as_component_ref(),
+            ];
+            let copied = views;
+            let from = [
+                ComponentRef::from(&module),
+                ComponentRef::from(&entry),
+                ComponentRef::from(&component),
+            ];
+            for (a, b) in copied.iter().zip(from) {
+                assert_eq!(a.as_ptr(), b.as_ptr());
+            }
+            let pointers = session.component_pointers(copied.into_iter()).unwrap();
+            std::hint::black_box(pointers);
+        });
+        assert_eq!(costs, Costs::default());
+        let (result, costs) = measure(|| session.compose_refs(&[]));
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        assert_eq!(costs, Costs::default());
+        let other = GlobalSession::new()
+            .unwrap()
+            .create_session(&SessionOptions::default())
+            .unwrap();
+        let (result, costs) =
+            measure(|| other.compose_refs(&[module.as_component_ref(), entry.as_component_ref()]));
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        assert_eq!(costs, Costs::default());
+    }
+
+    #[test]
+    fn successful_small_composition_only_allocates_its_dependency_owner() {
+        let (session, module, entry) = inputs();
+        let (output, costs) = measure(|| {
+            session
+                .compose_refs(&[module.as_component_ref(), entry.as_component_ref()])
+                .unwrap()
+        });
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            costs,
+            Costs {
+                allocations: 1,
+                add_refs: 2,
+                releases: 0
+            }
+        );
+        // The same inline path is used by the existing owned-input API.
+        let owned = [module.as_component(), entry.as_component()];
+        let (legacy, costs) = measure(|| session.compose(&[&owned[0], &owned[1]]).unwrap());
+        assert!(legacy.diagnostics.is_empty());
+        assert_eq!(
+            costs,
+            Costs {
+                allocations: 1,
+                add_refs: 2,
+                releases: 0
+            }
+        );
+        drop((module, entry, owned, session, legacy));
+        let code = output
+            .value
+            .link()
+            .unwrap()
+            .value
+            .entry_point_code(0, 0)
+            .unwrap()
+            .value;
+        assert_eq!(&code.as_bytes()[..4], &0x07230203u32.to_le_bytes());
+    }
+
+    #[test]
+    fn nested_composition_raw_query_retains_and_releases_session_graph() {
+        let (session, module, entry) = inputs();
+        let weak_session = Rc::downgrade(&session.0);
+        let first = session
+            .compose_refs(&[module.as_component_ref()])
+            .unwrap()
+            .value;
+        let second = session
+            .compose_refs(&[first.as_component_ref(), entry.as_component_ref()])
+            .unwrap()
+            .value;
+        let raw = second.as_raw().clone();
+        drop((first, second, entry, module, session));
+        assert!(weak_session.upgrade().is_some());
+        let extension = raw.query::<sys::slang_IComponentType2>().unwrap();
+        drop(raw);
+        // SAFETY: the retained graph has one entry and target zero; this SDK
+        // call transfers owned result and diagnostic references.
+        let result = unsafe {
+            extension.call_owned(|ptr, out, diag| {
+                sys::slang_rs_slang_IComponentType2_getEntryPointCompileResult(ptr, 0, 0, out, diag)
+            })
+        }
+        .unwrap()
+        .map(CompileResult)
+        .value;
+        drop(extension);
+        let blob = result.item(0).unwrap();
+        drop(result);
+        assert!(weak_session.upgrade().is_some());
+        assert_eq!(&blob.as_bytes()[..4], &0x07230203u32.to_le_bytes());
+        drop(blob);
+        assert!(weak_session.upgrade().is_none());
+    }
 }

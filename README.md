@@ -49,8 +49,8 @@ fn main() -> slang_auto::Result<()> {
     "#)?;
     eprint!("{}", loaded.diagnostics);
     let entry = loaded.value.find_entry_point("main")?;
-    let composed = session.compose(&[
-        &loaded.value.as_component(), &entry.as_component(),
+    let composed = session.compose_refs(&[
+        loaded.value.as_component_ref(), entry.as_component_ref(),
     ])?;
     eprint!("{}", composed.diagnostics);
     let linked = composed.value.link()?;
@@ -69,6 +69,15 @@ fn main() -> slang_auto::Result<()> {
 ```
 
 The complete runnable example is in `crates/slang/examples/compile.rs`.
+
+For composition, `Module`, `EntryPoint`, and `Component` provide borrowed
+`ComponentRef` views through `as_component_ref()`. View creation/copying does
+not allocate or adjust COM references. `compose_refs` accepts these views and
+returns an owned component, so inputs can be dropped after composition. It
+uses inline buffers for up to four inputs, retaining one COM reference per
+input and sharing their existing dependency graphs after success. The result
+still allocates one dependency owner; Slang and diagnostics have separate
+costs. The original owned `as_component()` and `compose()` APIs remain available.
 
 ### Borrowed Configuration and Multiple Outputs
 

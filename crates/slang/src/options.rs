@@ -348,77 +348,34 @@ fn count32(value: usize) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        alloc::{GlobalAlloc, Layout, System},
-        cell::Cell,
-    };
-
-    // Count Rust allocations only on the thread measuring descriptor preparation;
-    // other tests and Slang's allocator do not affect this check.
-    struct CountingAllocator;
-    thread_local! {
-        static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };
-    }
-    fn record_allocation() {
-        let _ = ALLOCATIONS.try_with(|count| {
-            if let Some(value) = count.get() {
-                count.set(Some(value + 1));
-            }
-        });
-    }
-    unsafe impl GlobalAlloc for CountingAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            record_allocation();
-            // SAFETY: forwarding the allocator contract unchanged to System.
-            unsafe { System.alloc(layout) }
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: forwarding the allocator contract unchanged to System.
-            unsafe { System.dealloc(ptr, layout) }
-        }
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            record_allocation();
-            // SAFETY: forwarding the allocator contract unchanged to System.
-            unsafe { System.realloc(ptr, layout, size) }
-        }
-    }
-    #[global_allocator]
-    static ALLOCATOR: CountingAllocator = CountingAllocator;
 
     #[test]
     fn small_configuration_preparation_does_not_allocate() {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                ALLOCATIONS.with(|count| count.set(None));
-            }
-        }
-        let _reset = Reset;
-        ALLOCATIONS.with(|count| count.set(Some(0)));
-        let options = [
-            CompilerOption::define("FEATURE", "1"),
-            CompilerOption::optimization(OptimizationLevel::High),
-        ];
-        let target_options = [CompilerOption::vulkan_use_entry_point_name(true)];
-        let targets = [
-            TargetDesc::spirv().compiler_options(&target_options),
-            TargetDesc::spirv_asm(),
-        ];
-        let paths = ["shaders/include"];
-        let defines = [("GROUP_SIZE", "8")];
-        let desc = SessionDesc::new()
-            .targets(&targets)
-            .compiler_options(&options)
-            .search_paths(&paths)
-            .defines(&defines);
-        desc.with_raw(|raw| {
-            std::hint::black_box(raw);
-            Ok(())
-        })
-        .unwrap();
-        let count = ALLOCATIONS.with(|count| count.replace(None)).unwrap();
+        let (_, costs) = crate::test_support::measure(|| {
+            let options = [
+                CompilerOption::define("FEATURE", "1"),
+                CompilerOption::optimization(OptimizationLevel::High),
+            ];
+            let target_options = [CompilerOption::vulkan_use_entry_point_name(true)];
+            let targets = [
+                TargetDesc::spirv().compiler_options(&target_options),
+                TargetDesc::spirv_asm(),
+            ];
+            let paths = ["shaders/include"];
+            let defines = [("GROUP_SIZE", "8")];
+            let desc = SessionDesc::new()
+                .targets(&targets)
+                .compiler_options(&options)
+                .search_paths(&paths)
+                .defines(&defines);
+            desc.with_raw(|raw| {
+                std::hint::black_box(raw);
+                Ok(())
+            })
+            .unwrap();
+        });
         assert_eq!(
-            count, 0,
+            costs.allocations, 0,
             "descriptor construction and FFI preparation must stay inline"
         );
     }
