@@ -1,8 +1,9 @@
 use crate::{
-    Blob, ComPtr, Error, Output, ProgramLayout, Result,
+    Blob, Capability, ComPtr, Error, Output, ProgramLayout, Result, SessionDesc, TargetDesc,
     com::{cstr, diagnostics, owned_output},
     sys,
 };
+use smallvec::SmallVec;
 use std::{
     ffi::{CStr, CString},
     rc::Rc,
@@ -23,7 +24,10 @@ impl GlobalSession {
         &self.0
     }
     pub fn find_profile(&self, name: &str) -> Result<sys::SlangProfileID> {
-        let name = CString::new(name)?;
+        crate::strings::with_cstr(name, |name| self.find_profile_cstr(name))?
+    }
+    /// Query a profile without allocating or copying the name.
+    pub fn find_profile_cstr(&self, name: &CStr) -> Result<sys::SlangProfileID> {
         let profile = unsafe {
             sys::slang_rs_slang_IGlobalSession_findProfile(self.0.as_ptr(), name.as_ptr())
         };
@@ -32,47 +36,39 @@ impl GlobalSession {
         }
         Ok(profile)
     }
+    pub fn find_capability(&self, name: &str) -> Result<Capability> {
+        crate::strings::with_cstr(name, |name| self.find_capability_cstr(name))?
+    }
+    /// Query a capability without allocating or copying the name.
+    pub fn find_capability_cstr(&self, name: &CStr) -> Result<Capability> {
+        // SAFETY: the session and terminated name are live for the call.
+        let capability = unsafe {
+            sys::slang_rs_slang_IGlobalSession_findCapability(self.0.as_ptr(), name.as_ptr())
+        };
+        if capability == sys::SlangCapabilityID_SLANG_CAPABILITY_UNKNOWN {
+            return Err(Error::InvalidArgument("Unknown Slang capability"));
+        }
+        Ok(Capability(capability))
+    }
     pub fn create_session(&self, options: &SessionOptions) -> Result<Session> {
-        let search_paths: Vec<CString> = options
-            .search_paths
-            .iter()
-            .map(|s| CString::new(s.as_str()))
-            .collect::<std::result::Result<_, _>>()?;
-        let path_ptrs: Vec<_> = search_paths.iter().map(|s| s.as_ptr()).collect();
-        let macros: Vec<(CString, CString)> = options
+        let paths: SmallVec<[_; 8]> = options.search_paths.iter().map(String::as_str).collect();
+        let defines: SmallVec<[_; 8]> = options
             .defines
             .iter()
-            .map(|(k, v)| Ok((CString::new(k.as_str())?, CString::new(v.as_str())?)))
-            .collect::<Result<_>>()?;
-        let macro_desc: Vec<_> = macros
-            .iter()
-            .map(|(k, v)| sys::slang_PreprocessorMacroDesc {
-                name: k.as_ptr(),
-                value: v.as_ptr(),
-            })
+            .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let targets: Vec<_> = options
+        let targets: SmallVec<[_; 4]> = options
             .targets
             .iter()
-            .map(|t| sys::slang_TargetDesc {
-                format: t.format,
-                profile: t.profile,
-                flags: t.flags,
-                ..Default::default()
-            })
+            .map(|t| TargetDesc::new(t.format).profile(t.profile).flags(t.flags))
             .collect();
-        let desc = sys::slang_SessionDesc {
-            targets: targets.as_ptr(),
-            targetCount: count(targets.len())?,
-            searchPaths: path_ptrs.as_ptr(),
-            searchPathCount: count(path_ptrs.len())?,
-            preprocessorMacros: macro_desc.as_ptr(),
-            preprocessorMacroCount: count(macro_desc.len())?,
-            defaultMatrixLayoutMode: options.matrix_layout,
-            ..Default::default()
-        };
-        // Slang copies these descriptor arrays/strings during createSession.
-        unsafe { self.create_session_raw(&desc, targets.len()) }
+        self.create_session_desc(
+            &SessionDesc::new()
+                .targets(&targets)
+                .search_paths(&paths)
+                .defines(&defines)
+                .matrix_layout_raw(options.matrix_layout),
+        )
     }
     /// Full descriptor escape hatch, including future SDK options and file systems.
     ///
@@ -368,6 +364,70 @@ impl Component {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IComponentType> {
         &self.raw
     }
+    fn compile_result_interface(&self) -> Result<ComPtr<sys::slang_IComponentType2>> {
+        self.raw.query().map_err(|error| match error {
+            Error::Slang { code, .. } => Error::InterfaceQuery {
+                interface: "IComponentType2",
+                code,
+            },
+            other => other,
+        })
+    }
+    /// Retrieve multiple outputs (for example code and separate debug data).
+    /// The result retains its component; item roles/order are target-specific.
+    pub fn target_compile_result(&self, target: usize) -> Result<Output<CompileResult>> {
+        let target = self.session.target(target)?;
+        let interface = self.compile_result_interface()?;
+        // SAFETY: target is checked and the extension is live. Both outputs
+        // transfer owned references; call_owned also retains the component chain.
+        unsafe {
+            interface.call_owned(|ptr, out, diag| {
+                sys::slang_rs_slang_IComponentType2_getTargetCompileResult(ptr, target, out, diag)
+            })
+        }
+        .map(|o| o.map(CompileResult))
+    }
+    /// Retrieve all outputs for a checked entry point and target.
+    pub fn entry_point_compile_result(
+        &self,
+        entry: usize,
+        target: usize,
+    ) -> Result<Output<CompileResult>> {
+        let target_index = self.session.target(target)?;
+        let layout = self.layout(target)?;
+        if entry >= layout.value.entry_point_count() {
+            return Err(Error::InvalidArgument("Entry point index out of bounds"));
+        }
+        let entry = count(entry)?;
+        let interface = self.compile_result_interface()?;
+        // SAFETY: indices are checked, the interface is live, and outputs are
+        // owned references as required by call_owned.
+        let result = unsafe {
+            interface.call_owned(|ptr, out, diag| {
+                sys::slang_rs_slang_IComponentType2_getEntryPointCompileResult(
+                    ptr,
+                    entry,
+                    target_index,
+                    out,
+                    diag,
+                )
+            })
+        };
+        match result {
+            Ok(mut output) => {
+                output.diagnostics.insert_str(0, &layout.diagnostics);
+                Ok(output.map(CompileResult))
+            }
+            Err(Error::Slang {
+                code,
+                mut diagnostics,
+            }) => {
+                diagnostics.insert_str(0, &layout.diagnostics);
+                Err(Error::Slang { code, diagnostics })
+            }
+            Err(error) => Err(error),
+        }
+    }
     pub fn link(&self) -> Result<Output<Self>> {
         unsafe {
             owned_output("link", |out, diag| {
@@ -450,7 +510,46 @@ impl Component {
     }
 }
 
-fn count(value: usize) -> Result<sys::SlangInt> {
+/// An owned multi-blob compilation result. Does not assign universal meanings
+/// to item indices: those depend on the target and enabled compiler options.
+#[derive(Debug, Clone)]
+pub struct CompileResult(ComPtr<sys::slang_ICompileResult>);
+impl CompileResult {
+    pub fn as_raw(&self) -> &ComPtr<sys::slang_ICompileResult> {
+        &self.0
+    }
+    pub fn item_count(&self) -> usize {
+        // SAFETY: the interface remains live throughout the call.
+        unsafe { sys::slang_rs_slang_ICompileResult_getItemCount(self.0.as_ptr()) as usize }
+    }
+    /// Read an item without copying its bytes. Out-of-bounds indices return an
+    /// error; use item_count to distinguish absent optional outputs.
+    pub fn item(&self, index: usize) -> Result<Blob> {
+        if index >= self.item_count() {
+            return Err(Error::InvalidArgument(
+                "Compile result item index out of bounds",
+            ));
+        }
+        // SAFETY: index fits in the SDK's u32 item count. The SDK transfers an
+        // owned immutable blob, and call_owned retains this result's dependencies.
+        unsafe {
+            self.0.call_owned(|ptr, out, _| {
+                sys::slang_rs_slang_ICompileResult_getItemData(ptr, index as u32, out)
+            })
+        }
+        .map(|output| Blob(output.value))
+    }
+    pub fn metadata(&self) -> Result<ComPtr<sys::slang_IMetadata>> {
+        // SAFETY: getMetadata transfers an owned interface reference.
+        unsafe {
+            self.0
+                .call_owned(|ptr, out, _| sys::slang_rs_slang_ICompileResult_getMetadata(ptr, out))
+        }
+        .map(|output| output.value)
+    }
+}
+
+pub(crate) fn count(value: usize) -> Result<sys::SlangInt> {
     value
         .try_into()
         .map_err(|_| Error::InvalidArgument("Count exceeds SlangInt"))

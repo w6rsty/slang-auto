@@ -20,9 +20,16 @@
 pub use slang_auto_sys as sys;
 mod com;
 mod compile;
+mod options;
 mod reflection;
+mod strings;
 pub use com::{Blob, ComPtr, Error, Output, Result};
+pub use compile::CompileResult;
 pub use compile::{Component, EntryPoint, GlobalSession, Module, Session, SessionOptions, Target};
+pub use options::{
+    Capability, CompilerOption, DebugInfoLevel, MatrixLayout, OptimizationLevel, SessionDesc,
+    Stage, TargetDesc,
+};
 pub use reflection::*;
 
 /// Returns the build tag of the loaded Slang compiler library without creating a session.

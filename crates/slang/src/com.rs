@@ -18,6 +18,10 @@ pub enum Error {
     },
     NullResult(&'static str),
     InvalidArgument(&'static str),
+    InterfaceQuery {
+        interface: &'static str,
+        code: sys::SlangResult,
+    },
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,6 +32,12 @@ impl fmt::Display for Error {
             }
             Self::NullResult(op) => write!(f, "Slang returned no object from {op}"),
             Self::InvalidArgument(message) => f.write_str(message),
+            Self::InterfaceQuery { interface, code } => {
+                write!(
+                    f,
+                    "Could not query Slang interface {interface}: 0x{code:08x}"
+                )
+            }
         }
     }
 }

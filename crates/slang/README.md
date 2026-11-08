@@ -44,6 +44,55 @@ unsafe `call_owned()` support advanced interfaces without adding handwritten
 bindings. Reflection views borrow their owning component. Strings validate NULs;
 successful diagnostics are retained in `Output<T>`. Handles are not `Send`/`Sync`.
 
+For explicit compiler configuration, borrow ordinary Rust strings and slices:
+
+```rust,no_run
+use slang_auto::{CompilerOption, GlobalSession, MatrixLayout, OptimizationLevel,
+    SessionDesc, TargetDesc};
+
+let global = GlobalSession::new()?;
+let profile = global.find_profile("spirv_1_5")?;
+let capability = global.find_capability("spvDescriptorHeapEXT")?;
+let options = [
+    CompilerOption::capability(capability),
+    CompilerOption::optimization(OptimizationLevel::High),
+    CompilerOption::define("FEATURE_X", "1"),
+    CompilerOption::emit_spirv_directly(true),
+];
+let targets = [TargetDesc::spirv().profile(profile)];
+let session = global.create_session_desc(
+    &SessionDesc::new()
+        .targets(&targets)
+        .compiler_options(&options)
+        .matrix_layout(MatrixLayout::ColumnMajor),
+)?;
+# Ok::<(), slang_auto::Error>(())
+```
+
+`SessionDesc` and `TargetDesc` borrow their inputs without allocation. Slang copies
+configuration during session creation, so those inputs can then be dropped.
+Session and target compiler options are separate; target options are passed to
+their respective SDK target descriptors. `SessionDesc::new()` has **no targets**;
+the existing owned `SessionOptions::default()` still selects SPIR-V.
+
+The wrapper prepares native arrays and NUL-terminated text at the call boundary.
+Small configurations use inline scratch storage (4 targets, 16 total compiler
+options, 8 search paths, 8 macro descriptors, and 1024 string bytes including NULs);
+larger inputs spill to the heap. Embedded NULs return `Error::InteriorNul`.
+Optional `_cstr` query/option constructors skip string copying. This is not a
+claim of allocation-free compilation: Slang, parent retention, and diagnostic
+text conversion still have their existing costs.
+
+`Component::entry_point_compile_result(entry, target)` and
+`target_compile_result(target)` return `Output<CompileResult>` for multi-blob
+outputs such as separate debug information. Use `item_count()` and `item(index)`
+to retrieve owned blobs without copying their bytes, or `metadata()` for the
+owned metadata interface. Results and blobs retain their dependencies. Invalid
+indices are errors; extension-query failures report `Error::InterfaceQuery` with
+the interface name and SDK status code. Item roles/order are target-specific,
+not a universal code/debug convention. See `examples/compile.rs` for a runnable
+configuration and multi-output example.
+
 `build_tag_string()` returns the loaded compiler's build identifier as an
 allocation-free `&'static CStr`, without requiring a session. Use `to_str()` for
 checked UTF-8 or `to_string_lossy()` for display. This is an opaque runtime build

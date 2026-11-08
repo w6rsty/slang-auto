@@ -14,6 +14,7 @@ description = "Rust ownership and compilation helpers for automatically generate
 
 [dependencies]
 slang-auto-sys = { path = "../slang-sys", version = "0.1.0" }
+smallvec = "1.16"
 
 [lints]
 workspace = true

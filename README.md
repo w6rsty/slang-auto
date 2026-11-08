@@ -70,6 +70,31 @@ fn main() -> slang_auto::Result<()> {
 
 The complete runnable example is in `crates/slang/examples/compile.rs`.
 
+### Borrowed Configuration and Multiple Outputs
+
+Use `SessionDesc` / `TargetDesc` for borrowed configuration and `CompilerOption`
+for typed capability, optimization, debug, entry-name, include-path, and macro
+options. Strings accept `&str`; callers do not need `CString`, raw descriptors,
+or `unsafe`. Both session-wide and per-target compiler options are supported.
+The existing owned `SessionOptions` API remains available and shares the same
+session-creation implementation.
+
+Descriptor construction does not allocate. FFI preparation uses inline buffers
+for common small configurations and heap storage for larger ones. It validates
+and terminates Rust strings in a shared temporary buffer; optional `_cstr`
+query/option constructors avoid string copying. Slang allocations, parent-object
+retention, and diagnostic `String` conversion remain, so the entire compilation
+workflow is not advertised as zero-allocation.
+
+`Component::entry_point_compile_result` and `target_compile_result` wrap
+`IComponentType2` and return `Output<CompileResult>`. `item_count`, `item`, and
+`metadata` expose owned outputs with bounds checks and dependency retention.
+The wrapper leaves target-specific artifact ordering to the application;
+interface-query failures are errors, not silently missing artifacts.
+
+See [the crate README](crates/slang/README.md) for configuration examples,
+inline-buffer capacities, and the difference between descriptor defaults.
+
 ### Slang Build Identifier
 
 Query the loaded compiler library without creating a session:
@@ -132,7 +157,7 @@ The manifest can also be read through `slang_auto::sys::API_MANIFEST`. Use `carg
 
 ## Rust Boundary and Lifetimes
 
-- `&str` inputs are checked for embedded NULs through `CString`; module source loading also provides a `&CStr` entry point to avoid duplicate allocations.
+- `&str` inputs are checked for embedded NULs internally. Session configuration and profile/capability lookup use inline string storage with a heap fallback; other existing text methods use `CString`. Optional `&CStr` entry points avoid string conversion for supported queries, options, and module source loading.
 - Names are returned as `Option<&CStr>` without assuming that SDK bytes are UTF-8. Blob provides byte slices, strict UTF-8 conversion, and lossy text conversion.
 - `Output<T>` preserves warnings on success; `Error::Slang` preserves diagnostics on failure. A negative `SlangResult` is treated as a failure.
 - `Clone/Drop` correspond to `addRef/release`. Borrowed pointers returned when loading modules are retained; outputs with owned references are taken over directly.

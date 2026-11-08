@@ -1,4 +1,6 @@
-use slang_auto::{GlobalSession, SessionOptions};
+use slang_auto::{
+    CompilerOption, DebugInfoLevel, GlobalSession, OptimizationLevel, SessionDesc, TargetDesc,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
@@ -6,7 +8,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         slang_auto::build_tag_string().to_string_lossy()
     );
     let global = GlobalSession::new()?;
-    let session = global.create_session(&SessionOptions::default())?;
+    let profile = global.find_profile("spirv_1_5")?;
+    let options = [
+        CompilerOption::optimization(OptimizationLevel::Default),
+        CompilerOption::debug_information(DebugInfoLevel::Standard),
+        CompilerOption::emit_spirv_directly(true),
+        CompilerOption::emit_separate_debug(true),
+    ];
+    let targets = [TargetDesc::spirv().profile(profile)];
+    let session = global.create_session_desc(
+        &SessionDesc::new()
+            .targets(&targets)
+            .compiler_options(&options),
+    )?;
     let module = session.load_module_from_source(
         "example",
         "example.slang",
@@ -40,10 +54,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             parameter.binding_index()
         );
     }
-    let code = linked.value.entry_point_code(0, 0)?;
-    print_diagnostics(&code.diagnostics);
-    println!("SPIR-V: {} bytes", code.value.as_bytes().len());
-    assert_eq!(&code.value.as_bytes()[..4], &0x07230203u32.to_le_bytes());
+    let result = linked.value.entry_point_compile_result(0, 0)?;
+    print_diagnostics(&result.diagnostics);
+    for index in 0..result.value.item_count() {
+        let blob = result.value.item(index)?;
+        println!("SPIR-V output {index}: {} bytes", blob.as_bytes().len());
+        assert_eq!(&blob.as_bytes()[..4], &0x07230203u32.to_le_bytes());
+    }
     Ok(())
 }
 fn print_diagnostics(text: &str) {
