@@ -76,6 +76,7 @@ pub struct CompilerOption<'a> {
     name: sys::slang_CompilerOptionName,
     value: Value<'a>,
 }
+
 impl<'a> CompilerOption<'a> {
     const fn int(name: sys::slang_CompilerOptionName, value: i32) -> Self {
         Self {
@@ -83,45 +84,53 @@ impl<'a> CompilerOption<'a> {
             value: Value::Int(value),
         }
     }
+
     pub const fn capability(value: Capability) -> Self {
         Self::int(sys::slang_CompilerOptionName_Capability, value.0)
     }
+
     pub fn optimization(value: OptimizationLevel) -> Self {
         Self::int(
             sys::slang_CompilerOptionName_Optimization,
             sys::SlangOptimizationLevel::from(value) as i32,
         )
     }
+
     pub fn debug_information(value: DebugInfoLevel) -> Self {
         Self::int(
             sys::slang_CompilerOptionName_DebugInformation,
             sys::SlangDebugInfoLevel::from(value) as i32,
         )
     }
+
     pub const fn emit_spirv_directly(value: bool) -> Self {
         Self::int(
             sys::slang_CompilerOptionName_EmitSpirvDirectly,
             value as i32,
         )
     }
+
     pub const fn emit_separate_debug(value: bool) -> Self {
         Self::int(
             sys::slang_CompilerOptionName_EmitSeparateDebug,
             value as i32,
         )
     }
+
     pub const fn vulkan_use_entry_point_name(value: bool) -> Self {
         Self::int(
             sys::slang_CompilerOptionName_VulkanUseEntryPointName,
             value as i32,
         )
     }
+
     pub const fn define(name: &'a str, value: &'a str) -> Self {
         Self {
             name: sys::slang_CompilerOptionName_MacroDefine,
             value: Value::Strings(StringArg::Str(name), Some(StringArg::Str(value))),
         }
     }
+
     /// Like `define`, without string validation or copying at the FFI boundary.
     pub const fn define_cstr(name: &'a CStr, value: &'a CStr) -> Self {
         Self {
@@ -129,18 +138,21 @@ impl<'a> CompilerOption<'a> {
             value: Value::Strings(StringArg::CStr(name), Some(StringArg::CStr(value))),
         }
     }
+
     pub const fn include_path(path: &'a str) -> Self {
         Self {
             name: sys::slang_CompilerOptionName_Include,
             value: Value::Strings(StringArg::Str(path), None),
         }
     }
+
     pub const fn include_path_cstr(path: &'a CStr) -> Self {
         Self {
             name: sys::slang_CompilerOptionName_Include,
             value: Value::Strings(StringArg::CStr(path), None),
         }
     }
+
     fn strings(self) -> impl Iterator<Item = StringArg<'a>> {
         match self.value {
             Value::Int(_) => [None, None],
@@ -149,6 +161,7 @@ impl<'a> CompilerOption<'a> {
         .into_iter()
         .flatten()
     }
+
     fn raw(self, strings: &mut StringCursor<'_>) -> sys::slang_CompilerOptionEntry {
         let mut value = sys::slang_CompilerOptionValue::default();
         match self.value {
@@ -177,6 +190,7 @@ pub struct TargetDesc<'a> {
     flags: sys::SlangTargetFlags,
     options: &'a [CompilerOption<'a>],
 }
+
 impl<'a> TargetDesc<'a> {
     pub fn new(format: sys::SlangCompileTarget) -> Self {
         let raw = sys::slang_TargetDesc::default();
@@ -187,20 +201,25 @@ impl<'a> TargetDesc<'a> {
             options: &[],
         }
     }
+
     pub fn spirv() -> Self {
         Self::new(sys::SlangCompileTarget_SLANG_SPIRV)
     }
+
     pub fn spirv_asm() -> Self {
         Self::new(sys::SlangCompileTarget_SLANG_SPIRV_ASM)
     }
+
     pub fn profile(mut self, profile: sys::SlangProfileID) -> Self {
         self.profile = profile;
         self
     }
+
     pub fn flags(mut self, flags: sys::SlangTargetFlags) -> Self {
         self.flags = flags;
         self
     }
+
     pub fn compiler_options(mut self, options: &'a [CompilerOption<'a>]) -> Self {
         self.options = options;
         self
@@ -216,15 +235,18 @@ impl<'a> TargetDesc<'a> {
 /// or the existing session ownership bookkeeping.
 #[derive(Debug, Clone, Copy)]
 pub struct SessionDesc<'a> {
+    filesystem: Option<&'a crate::FileSystem>,
     targets: &'a [TargetDesc<'a>],
     options: &'a [CompilerOption<'a>],
     paths: &'a [&'a str],
     defines: &'a [(&'a str, &'a str)],
     matrix_layout: sys::SlangMatrixLayoutMode,
 }
+
 impl Default for SessionDesc<'_> {
     fn default() -> Self {
         Self {
+            filesystem: None,
             targets: &[],
             options: &[],
             paths: &[],
@@ -233,30 +255,42 @@ impl Default for SessionDesc<'_> {
         }
     }
 }
+
 impl<'a> SessionDesc<'a> {
+    pub fn filesystem(mut self, filesystem: &'a crate::FileSystem) -> Self {
+        self.filesystem = Some(filesystem);
+        self
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
+
     pub fn targets(mut self, targets: &'a [TargetDesc<'a>]) -> Self {
         self.targets = targets;
         self
     }
+
     pub fn compiler_options(mut self, options: &'a [CompilerOption<'a>]) -> Self {
         self.options = options;
         self
     }
+
     pub fn search_paths(mut self, paths: &'a [&'a str]) -> Self {
         self.paths = paths;
         self
     }
+
     pub fn defines(mut self, defines: &'a [(&'a str, &'a str)]) -> Self {
         self.defines = defines;
         self
     }
+
     pub fn matrix_layout(mut self, layout: MatrixLayout) -> Self {
         self.matrix_layout = layout.into();
         self
     }
+
     pub(crate) fn matrix_layout_raw(mut self, layout: sys::SlangMatrixLayoutMode) -> Self {
         self.matrix_layout = layout;
         self
@@ -314,6 +348,9 @@ impl<'a> SessionDesc<'a> {
             })
             .collect::<Result<_>>()?;
         let raw = sys::slang_SessionDesc {
+            fileSystem: self
+                .filesystem
+                .map_or(std::ptr::null_mut(), |fs| fs.0.as_ptr()),
             targets: targets.as_ptr(),
             targetCount: crate::compile::count(targets.len())?,
             searchPaths: paths.as_ptr(),
@@ -328,17 +365,25 @@ impl<'a> SessionDesc<'a> {
         call(&raw)
     }
 }
+
 impl GlobalSession {
     /// Create a session from borrowed Rust configuration, with scoped FFI storage.
     pub fn create_session_desc(&self, desc: &SessionDesc<'_>) -> Result<Session> {
         desc.with_raw(|raw| {
             // SAFETY: all pointer/count pairs refer to the live buffers in
-            // with_raw. Slang copies configuration during createSession. No
-            // callbacks or borrowed file-system interfaces are supplied.
-            unsafe { self.create_session_raw(raw, desc.targets.len()) }
+            // with_raw. Slang copies descriptor storage during createSession;
+            // the owned callback filesystem is retained with the session handle.
+            unsafe {
+                self.create_session_with_filesystem(
+                    raw,
+                    desc.targets.len(),
+                    desc.filesystem.cloned(),
+                )
+            }
         })
     }
 }
+
 fn count32(value: usize) -> Result<u32> {
     value
         .try_into()

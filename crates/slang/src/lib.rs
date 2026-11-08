@@ -20,9 +20,11 @@
 pub use slang_auto_sys as sys;
 mod com;
 mod compile;
+mod filesystem;
 mod options;
 mod reflection;
 mod strings;
+pub use filesystem::FileSystem;
 #[cfg(test)]
 mod test_support;
 pub use com::{Blob, ComPtr, Error, Output, Result};

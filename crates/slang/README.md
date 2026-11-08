@@ -105,11 +105,28 @@ text conversion still have their existing costs.
 `target_compile_result(target)` return `Output<CompileResult>` for multi-blob
 outputs such as separate debug information. Use `item_count()` and `item(index)`
 to retrieve owned blobs without copying their bytes, or `metadata()` for the
-owned metadata interface. Results and blobs retain their dependencies. Invalid
+owned metadata interface. Results retain their components; item blobs own their
+buffers independently and do not retain the compile session. Invalid
 indices are errors; extension-query failures report `Error::InterfaceQuery` with
 the interface name and SDK status code. Item roles/order are target-specific,
 not a universal code/debug convention. See `examples/compile.rs` for a runnable
 configuration and multi-output example.
+
+`Session::load_module_from_bytes` accepts sized source without constructing a
+terminated source copy; `load_module_from_ir` restores serialized module bytes.
+`loaded_modules`, `Module::file_path`, `dependency_files`, and experimental
+`dependencies` support import-cache implementations. Serialization excludes
+imported modules; restore imports individually or through a session filesystem.
+
+`FileSystem::new` accepts an owned, thread-bound file-load callback and can be
+attached with `SessionDesc::filesystem`. The session and escaped handles retain
+the callback. It implements stable lexical absolute path identities, without
+resolving symlinks. Return consistent immutable contents for a path during the
+session. Non-owner-thread loads fail; callback panics become load failures.
+Filesystem enumeration and directory queries are outside this adapter's scope.
+`Blob::from_vec` transfers an existing allocation and `Blob::from_bytes` shares
+an `Arc<[u8]>`; neither copies the provided owned buffer. The built-in C++ vtable
+adapters are handwritten and packaged with sys, separate from generated bindings.
 
 `build_tag_string()` returns the loaded compiler's build identifier as an
 allocation-free `&'static CStr`, without requiring a session. Use `to_str()` for

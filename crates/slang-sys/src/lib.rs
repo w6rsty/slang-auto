@@ -19,6 +19,23 @@ pub unsafe trait Interface: Sized + 'static {
     fn guid() -> SlangUUID;
 }
 include!(concat!(env!("OUT_DIR"), "/interfaces.rs"));
+unsafe extern "C" {
+    pub fn slang_auto_blob(
+        data: *const ::std::ffi::c_void,
+        size: usize,
+        context: *mut ::std::ffi::c_void,
+        destroy: unsafe extern "C" fn(*mut ::std::ffi::c_void),
+    ) -> *mut ISlangBlob;
+    pub fn slang_auto_filesystem(
+        context: *mut ::std::ffi::c_void,
+        load: unsafe extern "C" fn(
+            *mut ::std::ffi::c_void,
+            *const ::std::ffi::c_char,
+            *mut *mut ISlangBlob,
+        ) -> SlangResult,
+        destroy: unsafe extern "C" fn(*mut ::std::ffi::c_void),
+    ) -> *mut ISlangFileSystem;
+}
 
 /// Auditable list of generated methods, functions, casts and default initializers.
 pub const API_MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/api-manifest.txt"));

@@ -173,7 +173,7 @@ The manifest can also be read through `slang_auto::sys::API_MANIFEST`. Use `carg
 - Sessions, components, and extension interfaces retain the parent objects they need; cloning an `as_raw()` handle also retains these dependencies.
 - A reflection view's `'a` is tied to its component, preventing access to the reflection tree after the program is released. The safe layer checks index bounds and rejects components from different sessions during composition.
 - Objects remain `!Send + !Sync`; multithreaded compilation should use a separate session on each thread. Callers remain responsible for thread and aliasing rules when invoking raw interfaces.
-- Implementing custom C++ virtual interfaces in Rust is outside the scope of this project's automatic generation. Raw callbacks and filesystem interfaces can be integrated by writing a custom C++ implementation.
+- Arbitrary Rust implementations of C++ virtual interfaces remain outside automatic generation. A packaged C++ adapter now exposes owned byte blobs and `FileSystem` callbacks; `SessionDesc::filesystem` retains the callback with its session.
 
 
 ## License

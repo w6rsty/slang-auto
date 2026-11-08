@@ -169,7 +169,9 @@ fn main() {
         .include(&include)
         .include(&out)
         .file(out.join("bridge.cpp"))
+        .file("src/adapters.cpp")
         .warnings(false);
+    println!("cargo:rerun-if-changed=src/adapters.cpp");
     // Apply custom include/define arguments to the bridge as well as the AST parser.
     for arg in args.iter().skip(5) {
         build.flag(arg);

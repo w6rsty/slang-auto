@@ -12,6 +12,7 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct GlobalSession(ComPtr<sys::slang_IGlobalSession>);
+
 impl GlobalSession {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -21,12 +22,15 @@ impl GlobalSession {
             .map(|o| Self(o.value))
         }
     }
+
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IGlobalSession> {
         &self.0
     }
+
     pub fn find_profile(&self, name: &str) -> Result<sys::SlangProfileID> {
         crate::strings::with_cstr(name, |name| self.find_profile_cstr(name))?
     }
+
     /// Query a profile without allocating or copying the name.
     pub fn find_profile_cstr(&self, name: &CStr) -> Result<sys::SlangProfileID> {
         let profile = unsafe {
@@ -37,9 +41,11 @@ impl GlobalSession {
         }
         Ok(profile)
     }
+
     pub fn find_capability(&self, name: &str) -> Result<Capability> {
         crate::strings::with_cstr(name, |name| self.find_capability_cstr(name))?
     }
+
     /// Query a capability without allocating or copying the name.
     pub fn find_capability_cstr(&self, name: &CStr) -> Result<Capability> {
         // SAFETY: the session and terminated name are live for the call.
@@ -51,6 +57,7 @@ impl GlobalSession {
         }
         Ok(Capability(capability))
     }
+
     pub fn create_session(&self, options: &SessionOptions) -> Result<Session> {
         let paths: SmallVec<[_; 8]> = options.search_paths.iter().map(String::as_str).collect();
         let defines: SmallVec<[_; 8]> = options
@@ -71,6 +78,7 @@ impl GlobalSession {
                 .matrix_layout_raw(options.matrix_layout),
         )
     }
+
     /// Full descriptor escape hatch, including future SDK options and file systems.
     ///
     /// # Safety
@@ -82,12 +90,22 @@ impl GlobalSession {
         desc: &sys::slang_SessionDesc,
         target_count: usize,
     ) -> Result<Session> {
+        // SAFETY: forwarded from this raw entry point's caller.
+        unsafe { self.create_session_with_filesystem(desc, target_count, None) }
+    }
+
+    pub(crate) unsafe fn create_session_with_filesystem(
+        &self,
+        desc: &sys::slang_SessionDesc,
+        target_count: usize,
+        filesystem: Option<crate::FileSystem>,
+    ) -> Result<Session> {
         unsafe {
             let raw = owned_output("createSession", |out, _| {
                 sys::slang_rs_slang_IGlobalSession_createSession(self.0.as_ptr(), desc, out)
             })?
             .value
-            .with_owner(self.clone());
+            .with_owner((self.clone(), filesystem));
             Ok(Session(Rc::new(SessionInner {
                 raw,
                 _global: self.clone(),
@@ -103,6 +121,7 @@ pub struct Target {
     pub profile: sys::SlangProfileID,
     pub flags: sys::SlangTargetFlags,
 }
+
 impl Target {
     pub fn new(format: sys::SlangCompileTarget) -> Self {
         let d = sys::slang_TargetDesc::default();
@@ -112,9 +131,11 @@ impl Target {
             flags: d.flags,
         }
     }
+
     pub fn spirv() -> Self {
         Self::new(sys::SlangCompileTarget_SLANG_SPIRV)
     }
+
     pub fn profile(mut self, profile: sys::SlangProfileID) -> Self {
         self.profile = profile;
         self
@@ -128,6 +149,7 @@ pub struct SessionOptions {
     pub defines: Vec<(String, String)>,
     pub matrix_layout: sys::SlangMatrixLayoutMode,
 }
+
 impl Default for SessionOptions {
     fn default() -> Self {
         Self {
@@ -145,12 +167,14 @@ struct SessionInner {
     _global: GlobalSession,
     target_count: usize,
 }
+
 #[derive(Debug, Clone)]
 pub struct Session(Rc<SessionInner>);
 impl Session {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_ISession> {
         &self.0.raw
     }
+
     pub fn load_module(&self, name: &str) -> Result<Output<Module>> {
         let name = CString::new(name)?;
         unsafe {
@@ -159,6 +183,73 @@ impl Session {
             })
         }
     }
+
+    /// Load sized source without creating a terminated copy of the source text.
+    pub fn load_module_from_bytes(
+        &self,
+        name: &str,
+        path: &str,
+        source: &[u8],
+    ) -> Result<Output<Module>> {
+        let (name, path) = (CString::new(name)?, CString::new(path)?);
+        // SAFETY: source is valid for its explicit length during this call.
+        unsafe {
+            self.load(|diag| {
+                sys::slang_loadModuleFromSource(
+                    self.as_raw().as_ptr(),
+                    name.as_ptr(),
+                    path.as_ptr(),
+                    source.as_ptr().cast(),
+                    source.len(),
+                    diag,
+                )
+            })
+        }
+    }
+
+    /// Load serialized IR in this session, resolving its imports via this session.
+    pub fn load_module_from_ir(
+        &self,
+        name: &str,
+        path: &str,
+        source: &[u8],
+    ) -> Result<Output<Module>> {
+        let (name, path) = (CString::new(name)?, CString::new(path)?);
+        // SAFETY: the supplied IR byte slice and strings are live for the call.
+        unsafe {
+            self.load(|diag| {
+                sys::slang_loadModuleFromIRBlob(
+                    self.as_raw().as_ptr(),
+                    name.as_ptr(),
+                    path.as_ptr(),
+                    source.as_ptr().cast(),
+                    source.len(),
+                    diag,
+                )
+            })
+        }
+    }
+
+    /// Enumerate session-owned modules, retaining each borrowed interface.
+    pub fn loaded_modules(&self) -> Vec<Module> {
+        // SAFETY: indices are bounded by the count from this same live session.
+        unsafe {
+            let count = sys::slang_rs_slang_ISession_getLoadedModuleCount(self.as_raw().as_ptr());
+            (0..count)
+                .filter_map(|i| {
+                    ComPtr::from_raw_borrowed(sys::slang_rs_slang_ISession_getLoadedModule(
+                        self.as_raw().as_ptr(),
+                        i,
+                    ))
+                    .map(|raw| Module {
+                        raw: raw.with_owner(self.clone()),
+                        session: self.clone(),
+                    })
+                })
+                .collect()
+        }
+    }
+
     pub fn load_module_from_source(
         &self,
         name: &str,
@@ -172,6 +263,7 @@ impl Session {
         );
         self.load_module_from_source_cstr(&name, &path, &source)
     }
+
     pub fn load_module_from_source_cstr(
         &self,
         name: &CStr,
@@ -190,6 +282,7 @@ impl Session {
             })
         }
     }
+
     unsafe fn load(
         &self,
         call: impl FnOnce(*mut *mut sys::ISlangBlob) -> *mut sys::slang_IModule,
@@ -214,12 +307,14 @@ impl Session {
             })
         }
     }
+
     /// Compose owned components. Existing callers can keep using this entry point.
     /// For modules and entry points without temporary owned conversions, use
     /// [`Self::compose_refs`]. Both paths share validation and inline buffers.
     pub fn compose(&self, components: &[&Component]) -> Result<Output<Component>> {
         self.compose_impl(components.iter().map(|c| c.as_component_ref()))
     }
+
     /// Compose borrowed module, entry-point, or component views.
     ///
     /// Up to four inputs fit in inline pointer and retained-handle buffers.
@@ -229,6 +324,7 @@ impl Session {
     pub fn compose_refs(&self, components: &[ComponentRef<'_>]) -> Result<Output<Component>> {
         self.compose_impl(components.iter().copied())
     }
+
     fn compose_impl<'a>(
         &self,
         components: impl ExactSizeIterator<Item = ComponentRef<'a>> + Clone,
@@ -257,6 +353,7 @@ impl Session {
             session: self.clone(),
         }))
     }
+
     fn component_pointers<'a>(
         &self,
         components: impl ExactSizeIterator<Item = ComponentRef<'a>> + Clone,
@@ -290,10 +387,52 @@ pub struct Module {
     raw: ComPtr<sys::slang_IModule>,
     session: Session,
 }
+
 impl Module {
+    pub fn file_path(&self) -> Option<&CStr> {
+        // SAFETY: SDK-owned bytes remain valid while this module is retained.
+        unsafe { cstr(sys::slang_rs_slang_IModule_getFilePath(self.raw.as_ptr())) }
+    }
+
+    /// File dependency closure, including includes, as reported by the SDK.
+    pub fn dependency_files(&self) -> Vec<&CStr> {
+        // SAFETY: bounded indices, with returned strings borrowed from self.
+        unsafe {
+            let count = sys::slang_rs_slang_IModule_getDependencyFileCount(self.raw.as_ptr());
+            (0..count)
+                .filter_map(|i| {
+                    cstr(sys::slang_rs_slang_IModule_getDependencyFilePath(
+                        self.raw.as_ptr(),
+                        i,
+                    ))
+                })
+                .collect()
+        }
+    }
+
+    /// Module dependencies exposed by the SDK's experimental interface. Failure
+    /// to query the interface is reported, allowing callers to choose a fallback.
+    pub fn dependencies(&self) -> Result<Vec<Module>> {
+        let interface = self
+            .raw
+            .query::<sys::slang_IModulePrecompileService_Experimental>()?;
+        // SAFETY: the interface is live and indices are bounded by its count.
+        unsafe {
+            let count =
+                sys::slang_rs_slang_IModulePrecompileService_Experimental_getModuleDependencyCount(
+                    interface.as_ptr(),
+                );
+            (0..count).map(|i| {
+                interface.call_owned(|ptr, out, diag| sys::slang_rs_slang_IModulePrecompileService_Experimental_getModuleDependency(ptr, i, out, diag))
+                    .map(|o| Module { raw: o.value, session: self.session.clone() })
+            }).collect()
+        }
+    }
+
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IModule> {
         &self.raw
     }
+
     /// Borrow a component view without allocating or changing reference counts.
     #[inline]
     pub fn as_component_ref(&self) -> ComponentRef<'_> {
@@ -305,6 +444,7 @@ impl Module {
             source: ComponentSource::Module(self),
         }
     }
+
     /// Create an owned component reference. For a temporary composition input,
     /// prefer [`Self::as_component_ref`], which does not retain or allocate.
     pub fn as_component(&self) -> Component {
@@ -319,9 +459,11 @@ impl Module {
             session: self.session.clone(),
         }
     }
+
     pub fn name(&self) -> Option<&CStr> {
         unsafe { cstr(sys::slang_rs_slang_IModule_getName(self.raw.as_ptr())) }
     }
+
     pub fn find_entry_point(&self, name: &str) -> Result<EntryPoint> {
         let name = CString::new(name)?;
         unsafe {
@@ -338,6 +480,7 @@ impl Module {
             session: self.session.clone(),
         })
     }
+
     pub fn find_and_check_entry_point(
         &self,
         name: &str,
@@ -362,6 +505,7 @@ impl Module {
             })
         })
     }
+
     pub fn serialize(&self) -> Result<Blob> {
         unsafe {
             owned_output("serialize", |out, _| {
@@ -377,10 +521,12 @@ pub struct EntryPoint {
     raw: ComPtr<sys::slang_IEntryPoint>,
     session: Session,
 }
+
 impl EntryPoint {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IEntryPoint> {
         &self.raw
     }
+
     /// Borrow a component view without allocating or changing reference counts.
     #[inline]
     pub fn as_component_ref(&self) -> ComponentRef<'_> {
@@ -393,6 +539,7 @@ impl EntryPoint {
             source: ComponentSource::EntryPoint(self),
         }
     }
+
     /// Create an owned component reference. For temporary composition inputs,
     /// prefer [`Self::as_component_ref`].
     pub fn as_component(&self) -> Component {
@@ -460,6 +607,7 @@ impl<'a> ComponentRef<'a> {
     pub fn as_ptr(self) -> *mut sys::slang_IComponentType {
         self.ptr.as_ptr()
     }
+
     fn session(self) -> &'a Session {
         match self.source {
             ComponentSource::Module(source) => &source.session,
@@ -467,6 +615,7 @@ impl<'a> ComponentRef<'a> {
             ComponentSource::Component(source) => &source.session,
         }
     }
+
     fn retain(self) -> ComPtr<sys::slang_IComponentType> {
         // SAFETY: private constructors obtain ptr via the generated base cast
         // (or directly for Component). Each source raw handle already retains
@@ -480,18 +629,21 @@ impl<'a> ComponentRef<'a> {
         }
     }
 }
+
 impl<'a> From<&'a Module> for ComponentRef<'a> {
     #[inline]
     fn from(source: &'a Module) -> Self {
         source.as_component_ref()
     }
 }
+
 impl<'a> From<&'a EntryPoint> for ComponentRef<'a> {
     #[inline]
     fn from(source: &'a EntryPoint) -> Self {
         source.as_component_ref()
     }
 }
+
 impl<'a> From<&'a Component> for ComponentRef<'a> {
     #[inline]
     fn from(source: &'a Component) -> Self {
@@ -504,10 +656,12 @@ pub struct Component {
     raw: ComPtr<sys::slang_IComponentType>,
     session: Session,
 }
+
 impl Component {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_IComponentType> {
         &self.raw
     }
+
     /// Borrow this component without allocating or retaining another reference.
     #[inline]
     pub fn as_component_ref(&self) -> ComponentRef<'_> {
@@ -516,6 +670,7 @@ impl Component {
             source: ComponentSource::Component(self),
         }
     }
+
     fn compile_result_interface(&self) -> Result<ComPtr<sys::slang_IComponentType2>> {
         self.raw.query().map_err(|error| match error {
             Error::Slang { code, .. } => Error::InterfaceQuery {
@@ -525,6 +680,7 @@ impl Component {
             other => other,
         })
     }
+
     /// Retrieve multiple outputs (for example code and separate debug data).
     /// The result retains its component; item roles/order are target-specific.
     pub fn target_compile_result(&self, target: usize) -> Result<Output<CompileResult>> {
@@ -539,6 +695,7 @@ impl Component {
         }
         .map(|o| o.map(CompileResult))
     }
+
     /// Retrieve all outputs for a checked entry point and target.
     pub fn entry_point_compile_result(
         &self,
@@ -580,6 +737,7 @@ impl Component {
             Err(error) => Err(error),
         }
     }
+
     pub fn link(&self) -> Result<Output<Self>> {
         unsafe {
             owned_output("link", |out, diag| {
@@ -593,6 +751,7 @@ impl Component {
             })
         })
     }
+
     pub fn layout(&self, target: usize) -> Result<Output<ProgramLayout<'_>>> {
         let target = self.session.target(target)?;
         unsafe {
@@ -609,6 +768,7 @@ impl Component {
             Ok(Output { value, diagnostics })
         }
     }
+
     pub fn entry_point_code(&self, entry: usize, target: usize) -> Result<Output<Blob>> {
         let target_index = self.session.target(target)?;
         let layout = self.layout(target)?;
@@ -632,6 +792,7 @@ impl Component {
             o.map(Blob)
         })
     }
+
     pub fn target_code(&self, target: usize) -> Result<Output<Blob>> {
         let target = self.session.target(target)?;
         unsafe {
@@ -646,6 +807,7 @@ impl Component {
         }
         .map(|o| o.map(Blob))
     }
+
     pub fn target_metadata(&self, target: usize) -> Result<Output<ComPtr<sys::slang_IMetadata>>> {
         let target = self.session.target(target)?;
         unsafe {
@@ -666,14 +828,17 @@ impl Component {
 /// to item indices: those depend on the target and enabled compiler options.
 #[derive(Debug, Clone)]
 pub struct CompileResult(ComPtr<sys::slang_ICompileResult>);
+
 impl CompileResult {
     pub fn as_raw(&self) -> &ComPtr<sys::slang_ICompileResult> {
         &self.0
     }
+
     pub fn item_count(&self) -> usize {
         // SAFETY: the interface remains live throughout the call.
         unsafe { sys::slang_rs_slang_ICompileResult_getItemCount(self.0.as_ptr()) as usize }
     }
+
     /// Read an item without copying its bytes. Out-of-bounds indices return an
     /// error; use item_count to distinguish absent optional outputs.
     pub fn item(&self, index: usize) -> Result<Blob> {
@@ -683,14 +848,16 @@ impl CompileResult {
             ));
         }
         // SAFETY: index fits in the SDK's u32 item count. The SDK transfers an
-        // owned immutable blob, and call_owned retains this result's dependencies.
+        // owned immutable blob. Its reference owns the buffer independently of
+        // the compile result, just like getEntryPointCode and module serialization.
         unsafe {
-            self.0.call_owned(|ptr, out, _| {
-                sys::slang_rs_slang_ICompileResult_getItemData(ptr, index as u32, out)
+            owned_output("getItemData", |out, _| {
+                sys::slang_rs_slang_ICompileResult_getItemData(self.0.as_ptr(), index as u32, out)
             })
         }
         .map(|output| Blob(output.value))
     }
+
     pub fn metadata(&self) -> Result<ComPtr<sys::slang_IMetadata>> {
         // SAFETY: getMetadata transfers an owned interface reference.
         unsafe {
@@ -838,7 +1005,7 @@ mod tests {
         drop(extension);
         let blob = result.item(0).unwrap();
         drop(result);
-        assert!(weak_session.upgrade().is_some());
+        assert!(weak_session.upgrade().is_none());
         assert_eq!(&blob.as_bytes()[..4], &0x07230203u32.to_le_bytes());
         drop(blob);
         assert!(weak_session.upgrade().is_none());
