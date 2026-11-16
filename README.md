@@ -69,6 +69,8 @@ fn main() -> slang_auto::Result<()> {
 ```
 
 The complete runnable example is in `crates/slang/examples/compile.rs`.
+It prints the material uniform buffer's size and field offsets with the
+typed reflection API. [Reflection examples and API notes](crates/slang/README.md#inspect-a-material-layout)
 
 For composition, `Module`, `EntryPoint`, and `Component` provide borrowed
 `ComponentRef` views through `as_component_ref()`. View creation/copying does

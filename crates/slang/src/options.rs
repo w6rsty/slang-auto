@@ -11,6 +11,15 @@ macro_rules! sdk_enum {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum $name { $($variant),+ }
+        impl $name {
+            /// Returns the corresponding Rust option if this value is supported.
+            pub const fn from_raw(value: sys::$raw) -> Option<Self> {
+                match value {
+                    $(sys::$constant => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
         impl From<$name> for sys::$raw {
             fn from(value: $name) -> Self {
                 match value { $($name::$variant => sys::$constant),+ }

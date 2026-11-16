@@ -23,6 +23,7 @@ mod compile;
 mod filesystem;
 mod options;
 mod reflection;
+mod reflection_types;
 mod strings;
 pub use filesystem::FileSystem;
 #[cfg(test)]
@@ -37,6 +38,7 @@ pub use options::{
     Stage, TargetDesc,
 };
 pub use reflection::*;
+pub use reflection_types::{ParameterCategory, ScalarType, TypeKind};
 
 /// Returns the build tag of the loaded Slang compiler library without creating a session.
 ///

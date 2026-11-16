@@ -1,4 +1,7 @@
-use slang_auto::{Component, Error, GlobalSession, SessionOptions, sys};
+use slang_auto::{
+    Component, Error, GlobalSession, ParameterCategory, ScalarType, SessionOptions, Stage,
+    TypeKind, sys,
+};
 
 const SHADER: &str = r#"
     struct Settings { float scale; float3 bias; };
@@ -58,6 +61,7 @@ fn compile_reflect_and_retain_parents() {
     assert_eq!(entry.name().unwrap().to_bytes(), b"main");
     assert_eq!(entry.thread_group_size(), [8, 1, 1]);
     assert_eq!(entry.stage(), sys::SlangStage_SLANG_STAGE_COMPUTE);
+    assert_eq!(entry.shader_stage(), Some(Stage::Compute));
     assert!(layout.entry_point(1).is_none());
     assert!(layout.parameter(usize::MAX).is_none());
     let settings = layout.find_type("Settings").unwrap().unwrap();
@@ -76,6 +80,67 @@ fn compile_reflect_and_retain_parents() {
     drop(code);
     drop(program);
     assert!(clone.as_bytes().len() > 20);
+}
+
+#[test]
+fn typed_reflection_reads_uniform_layout() {
+    let program = linked_program();
+    let layout = program.layout(0).unwrap().value;
+    let entry = layout.entry_point_named("main").unwrap();
+    assert!(entry.parameter_named("tid").is_some());
+    assert!(layout.entry_point_named("absent").is_none());
+    assert!(layout.parameter_named("absent").is_none());
+
+    let settings = layout.parameter_named("settings").unwrap();
+    assert_eq!(settings.binding_index(), 0);
+    assert_eq!(
+        settings.binding_space_for(ParameterCategory::DescriptorTableSlot),
+        0
+    );
+    let buffer = settings.ty().unwrap();
+    assert_eq!(buffer.type_kind(), TypeKind::ConstantBuffer);
+    assert_eq!(
+        buffer.parameter_category(),
+        ParameterCategory::DescriptorTableSlot
+    );
+    let data = buffer.element_type().unwrap();
+    assert_eq!(data.type_kind(), TypeKind::Struct);
+    assert_eq!(
+        data.categories().collect::<Vec<_>>(),
+        [ParameterCategory::Uniform]
+    );
+    assert!(data.category(usize::MAX).is_none());
+    assert_eq!(data.uniform_size(), 32);
+    assert_eq!(data.uniform_stride(), 32);
+    assert_eq!(data.uniform_alignment(), Some(16));
+    assert_eq!(
+        data.size(sys::SlangParameterCategory_SLANG_PARAMETER_CATEGORY_UNIFORM),
+        data.size(ParameterCategory::Uniform),
+    );
+
+    let bias = data.field_named("bias").unwrap();
+    assert_eq!(data.field_named("scale").unwrap().uniform_offset(), 0);
+    assert_eq!(bias.uniform_offset(), 16);
+    assert_eq!(bias.offset(ParameterCategory::Uniform), 16);
+    assert!(data.field_named("absent").is_none());
+    let bias = data
+        .ty()
+        .unwrap()
+        .field_named("bias")
+        .unwrap()
+        .ty()
+        .unwrap();
+    assert_eq!(bias.type_kind(), TypeKind::Vector);
+    assert_eq!(bias.scalar_type(), ScalarType::Float32);
+    assert_eq!((bias.row_count(), bias.column_count()), (1, 3));
+}
+
+#[test]
+fn typed_reflection_preserves_unknown_native_values() {
+    assert_eq!(ParameterCategory::from_raw(u32::MAX).as_raw(), u32::MAX);
+    assert_eq!(TypeKind::from_raw(u32::MAX).as_raw(), u32::MAX);
+    assert_eq!(ScalarType::from_raw(u32::MAX).as_raw(), u32::MAX);
+    assert!(Stage::from_raw(u32::MAX).is_none());
 }
 
 #[test]
@@ -99,18 +164,11 @@ fn extension_query_and_cpp_reference_parameter() {
     // The program and original queried owner can drop before the extension handle.
     drop(unknown);
     drop(program);
-    let mut used = false;
-    let result = unsafe {
-        sys::slang_rs_slang_IMetadata_isParameterLocationUsed(
-            metadata.as_ptr(),
-            sys::SlangParameterCategory_SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT,
-            0,
-            0,
-            &mut used,
-        )
-    };
-    assert!(result >= 0, "metadata result: {result}");
-    assert!(used);
+    assert!(
+        metadata
+            .is_parameter_location_used(ParameterCategory::DescriptorTableSlot, 0, 0)
+            .unwrap()
+    );
 }
 
 #[test]

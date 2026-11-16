@@ -1,4 +1,6 @@
-use crate::{Result, com::cstr, sys};
+use crate::{
+    ComPtr, Error, ParameterCategory, Result, ScalarType, Stage, TypeKind, com::cstr, sys,
+};
 use std::{
     ffi::{CStr, CString},
     marker::PhantomData,
@@ -55,6 +57,11 @@ impl<'a> ProgramLayout<'a> {
     pub fn parameters(self) -> impl Iterator<Item = VariableLayout<'a>> {
         (0..self.parameter_count()).filter_map(move |i| self.parameter(i))
     }
+    /// Finds a global parameter by its reflected name.
+    pub fn parameter_named(self, name: &str) -> Option<VariableLayout<'a>> {
+        self.parameters()
+            .find(|parameter| named(parameter.name(), name))
+    }
     pub fn entry_point_count(self) -> usize {
         unsafe { sys::slang_rs_slang_ShaderReflection_getEntryPointCount(self.as_ptr()) as usize }
     }
@@ -71,6 +78,10 @@ impl<'a> ProgramLayout<'a> {
     }
     pub fn entry_points(self) -> impl Iterator<Item = EntryPointLayout<'a>> {
         (0..self.entry_point_count()).filter_map(move |i| self.entry_point(i))
+    }
+    /// Finds an entry point by its reflected name.
+    pub fn entry_point_named(self, name: &str) -> Option<EntryPointLayout<'a>> {
+        self.entry_points().find(|entry| named(entry.name(), name))
     }
     pub fn find_type(self, name: &str) -> Result<Option<TypeReflection<'a>>> {
         let name = CString::new(name)?;
@@ -95,6 +106,10 @@ impl<'a> EntryPointLayout<'a> {
     }
     pub fn stage(self) -> sys::SlangStage {
         unsafe { sys::slang_rs_slang_EntryPointReflection_getStage(self.as_ptr()) }
+    }
+    /// Returns the shader stage if it is recognized by the Rust wrapper.
+    pub fn shader_stage(self) -> Option<Stage> {
+        Stage::from_raw(self.stage())
     }
     pub fn thread_group_size(self) -> [sys::SlangUInt; 3] {
         let mut size = [0; 3];
@@ -125,6 +140,13 @@ impl<'a> EntryPointLayout<'a> {
             )
         }
     }
+    pub fn parameters(self) -> impl Iterator<Item = VariableLayout<'a>> {
+        (0..self.parameter_count()).filter_map(move |i| self.parameter(i))
+    }
+    pub fn parameter_named(self, name: &str) -> Option<VariableLayout<'a>> {
+        self.parameters()
+            .find(|parameter| named(parameter.name(), name))
+    }
 }
 impl<'a> VariableLayout<'a> {
     pub fn name(self) -> Option<&'a CStr> {
@@ -154,8 +176,24 @@ impl<'a> VariableLayout<'a> {
     pub fn binding_space(self) -> u32 {
         unsafe { sys::slang_rs_slang_VariableLayoutReflection_getBindingSpace(self.as_ptr()) }
     }
-    pub fn offset(self, category: sys::SlangParameterCategory) -> usize {
-        unsafe { sys::slang_rs_slang_VariableLayoutReflection_getOffset(self.as_ptr(), category) }
+    /// Returns the relative register space or descriptor set for the given category.
+    pub fn binding_space_for(self, category: impl Into<ParameterCategory>) -> usize {
+        unsafe {
+            sys::spReflectionVariableLayout_GetSpace(self.as_ptr().cast(), category.into().as_raw())
+        }
+    }
+    /// Returns the relative offset in the given layout unit.
+    pub fn offset(self, category: impl Into<ParameterCategory>) -> usize {
+        unsafe {
+            sys::slang_rs_slang_VariableLayoutReflection_getOffset(
+                self.as_ptr(),
+                category.into().as_raw(),
+            )
+        }
+    }
+    /// Returns the relative byte offset within the enclosing uniform layout.
+    pub fn uniform_offset(self) -> usize {
+        self.offset(ParameterCategory::Uniform)
     }
 }
 impl<'a> TypeLayout<'a> {
@@ -166,12 +204,76 @@ impl<'a> TypeLayout<'a> {
             ))
         }
     }
-    /// Slang's unknown/unbounded size sentinel values are preserved.
-    pub fn size(self, category: sys::SlangParameterCategory) -> usize {
-        unsafe { sys::slang_rs_slang_TypeLayoutReflection_getSize(self.as_ptr(), category) }
+    /// Returns the reflected kind of this type.
+    pub fn type_kind(self) -> TypeKind {
+        self.ty().map_or(TypeKind::None, TypeReflection::type_kind)
     }
-    pub fn stride(self, category: sys::SlangParameterCategory) -> usize {
-        unsafe { sys::slang_rs_slang_TypeLayoutReflection_getStride(self.as_ptr(), category) }
+    /// Returns Slang's primary category for this layout.
+    pub fn parameter_category(self) -> ParameterCategory {
+        unsafe { sys::slang_rs_slang_TypeLayoutReflection_getParameterCategory(self.as_ptr()) }
+            .into()
+    }
+    pub fn category_count(self) -> usize {
+        unsafe { sys::slang_rs_slang_TypeLayoutReflection_getCategoryCount(self.as_ptr()) as usize }
+    }
+    /// Returns a layout category by index.
+    pub fn category(self, index: usize) -> Option<ParameterCategory> {
+        if index >= self.category_count() {
+            return None;
+        }
+        Some(
+            unsafe {
+                sys::slang_rs_slang_TypeLayoutReflection_getCategoryByIndex(
+                    self.as_ptr(),
+                    index as u32,
+                )
+            }
+            .into(),
+        )
+    }
+    /// Iterates over the units in which this layout occupies space.
+    pub fn categories(self) -> impl Iterator<Item = ParameterCategory> {
+        (0..self.category_count()).filter_map(move |i| self.category(i))
+    }
+    /// Slang's unknown/unbounded size sentinel values are preserved.
+    pub fn size(self, category: impl Into<ParameterCategory>) -> usize {
+        unsafe {
+            sys::slang_rs_slang_TypeLayoutReflection_getSize(
+                self.as_ptr(),
+                category.into().as_raw(),
+            )
+        }
+    }
+    /// Returns the stride in the given unit, preserving Slang's sentinel values.
+    pub fn stride(self, category: impl Into<ParameterCategory>) -> usize {
+        unsafe {
+            sys::slang_rs_slang_TypeLayoutReflection_getStride(
+                self.as_ptr(),
+                category.into().as_raw(),
+            )
+        }
+    }
+    /// Returns the alignment in the given unit when Slang reports a positive value.
+    pub fn alignment(self, category: impl Into<ParameterCategory>) -> Option<u32> {
+        let value = unsafe {
+            sys::slang_rs_slang_TypeLayoutReflection_getAlignment(
+                self.as_ptr(),
+                category.into().as_raw(),
+            )
+        };
+        u32::try_from(value).ok().filter(|&value| value > 0)
+    }
+    /// Returns the size of the uniform data in bytes.
+    pub fn uniform_size(self) -> usize {
+        self.size(ParameterCategory::Uniform)
+    }
+    /// Returns the uniform stride in bytes.
+    pub fn uniform_stride(self) -> usize {
+        self.stride(ParameterCategory::Uniform)
+    }
+    /// Returns the uniform alignment in bytes when Slang reports a positive value.
+    pub fn uniform_alignment(self) -> Option<u32> {
+        self.alignment(ParameterCategory::Uniform)
     }
     pub fn field_count(self) -> usize {
         unsafe { sys::slang_rs_slang_TypeLayoutReflection_getFieldCount(self.as_ptr()) as usize }
@@ -189,6 +291,10 @@ impl<'a> TypeLayout<'a> {
     }
     pub fn fields(self) -> impl Iterator<Item = VariableLayout<'a>> {
         (0..self.field_count()).filter_map(move |i| self.field(i))
+    }
+    /// Finds a field in this layout by its reflected name.
+    pub fn field_named(self, name: &str) -> Option<VariableLayout<'a>> {
+        self.fields().find(|field| named(field.name(), name))
     }
     pub fn element_type(self) -> Option<TypeLayout<'a>> {
         unsafe {
@@ -210,6 +316,20 @@ impl<'a> TypeReflection<'a> {
     pub fn kind(self) -> sys::slang_TypeReflection_Kind {
         unsafe { sys::slang_rs_slang_TypeReflection_getKind(self.as_ptr()) }
     }
+    /// Returns the reflected type kind.
+    pub fn type_kind(self) -> TypeKind {
+        TypeKind::from_raw(self.kind() as sys::SlangTypeKind)
+    }
+    /// Returns the scalar component reported by Slang.
+    pub fn scalar_type(self) -> ScalarType {
+        unsafe { sys::slang_rs_slang_TypeReflection_getScalarType(self.as_ptr()) }.into()
+    }
+    pub fn row_count(self) -> u32 {
+        unsafe { sys::slang_rs_slang_TypeReflection_getRowCount(self.as_ptr()) }
+    }
+    pub fn column_count(self) -> u32 {
+        unsafe { sys::slang_rs_slang_TypeReflection_getColumnCount(self.as_ptr()) }
+    }
     pub fn field_count(self) -> usize {
         unsafe { sys::slang_rs_slang_TypeReflection_getFieldCount(self.as_ptr()) as usize }
     }
@@ -227,6 +347,9 @@ impl<'a> TypeReflection<'a> {
     pub fn fields(self) -> impl Iterator<Item = VariableReflection<'a>> {
         (0..self.field_count()).filter_map(move |i| self.field(i))
     }
+    pub fn field_named(self, name: &str) -> Option<VariableReflection<'a>> {
+        self.fields().find(|field| named(field.name(), name))
+    }
     pub fn element_type(self) -> Option<TypeReflection<'a>> {
         unsafe {
             TypeReflection::from_raw(sys::slang_rs_slang_TypeReflection_getElementType(
@@ -234,6 +357,38 @@ impl<'a> TypeReflection<'a> {
             ))
         }
     }
+}
+
+impl ComPtr<sys::slang_IMetadata> {
+    /// Reports whether the compiled program uses this parameter location.
+    pub fn is_parameter_location_used(
+        &self,
+        category: impl Into<ParameterCategory>,
+        space: usize,
+        index: usize,
+    ) -> Result<bool> {
+        let mut used = false;
+        let code = unsafe {
+            sys::slang_rs_slang_IMetadata_isParameterLocationUsed(
+                self.as_ptr(),
+                category.into().as_raw(),
+                space as sys::SlangUInt,
+                index as sys::SlangUInt,
+                &mut used,
+            )
+        };
+        if code < 0 {
+            return Err(Error::Slang {
+                code,
+                diagnostics: String::new(),
+            });
+        }
+        Ok(used)
+    }
+}
+
+fn named(name: Option<&CStr>, expected: &str) -> bool {
+    name.is_some_and(|name| name.to_bytes() == expected.as_bytes())
 }
 impl<'a> VariableReflection<'a> {
     pub fn name(self) -> Option<&'a CStr> {

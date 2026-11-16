@@ -25,10 +25,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "example",
         "example.slang",
         r#"
-        RWStructuredBuffer<float> output;
+        struct Material { float4 base_color; float roughness; };
+        ConstantBuffer<Material> material;
+        RWStructuredBuffer<float4> output;
         [shader("compute")]
         [numthreads(8, 1, 1)]
-        void main(uint3 tid : SV_DispatchThreadID) { output[tid.x] = float(tid.x) * 2.0; }
+        void main(uint3 tid : SV_DispatchThreadID) {
+            output[tid.x] = material.base_color * (1.0 - material.roughness);
+        }
     "#,
     )?;
     print_diagnostics(&module.diagnostics);
@@ -42,8 +46,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_diagnostics(&layout.diagnostics);
     for entry in layout.value.entry_points() {
         println!(
-            "entry: {:?}, threads: {:?}",
+            "entry: {:?}, stage: {:?}, threads: {:?}",
             entry.name(),
+            entry.shader_stage(),
             entry.thread_group_size()
         );
     }
@@ -54,6 +59,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             parameter.binding_space(),
             parameter.binding_index()
         );
+    }
+    let material = layout
+        .value
+        .parameter_named("material")
+        .and_then(|parameter| parameter.ty())
+        .and_then(|buffer| buffer.element_type())
+        .ok_or("Missing material uniform layout")?;
+    println!("Material uniform data: {} bytes", material.uniform_size());
+    for field in material.fields() {
+        let name = field.name().map(|value| value.to_string_lossy());
+        println!("  {name:?}: byte offset {}", field.uniform_offset());
     }
     let result = linked.value.entry_point_compile_result(0, 0)?;
     print_diagnostics(&result.diagnostics);

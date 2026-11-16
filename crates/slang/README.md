@@ -62,6 +62,40 @@ conversion are additional costs. The existing `as_component()` owned conversion
 and `compose(&[&Component])` remain supported; `compose` shares the optimized
 implementation.
 
+## Inspect a material layout
+
+Use the typed reflection methods to find a parameter, inspect its element
+layout, and read field offsets in bytes.
+
+```rust,no_run
+use slang_auto::{Component, ParameterCategory, TypeKind};
+
+fn print_material(program: &Component) -> slang_auto::Result<()> {
+    let layout = program.layout(0)?.value;
+    if let Some(material) = layout.parameter_named("material") {
+        println!("Descriptor set {}", material.binding_space_for(ParameterCategory::DescriptorTableSlot));
+        if let Some(data) = material.ty().and_then(|buffer| buffer.element_type()) {
+            assert_eq!(data.type_kind(), TypeKind::Struct);
+            println!("Uniform size: {} bytes", data.uniform_size());
+            for field in data.fields() {
+                println!("{:?}: byte offset {}", field.name(), field.uniform_offset());
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+`TypeLayout::categories()` lists the layout units reported by Slang. Use
+`size`, `stride`, and `offset` with `ParameterCategory` for arbitrary units.
+The existing native category values are accepted by these methods as well.
+`TypeReflection::type_kind()` and `scalar_type()` provide typed inspection.
+`EntryPointLayout::shader_stage()` returns a known `Stage` when available.
+Program metadata provides `is_parameter_location_used` with the same typed
+categories.
+
+## Configure the compiler
+
 For explicit compiler configuration, borrow ordinary Rust strings and slices:
 
 ```rust,no_run
